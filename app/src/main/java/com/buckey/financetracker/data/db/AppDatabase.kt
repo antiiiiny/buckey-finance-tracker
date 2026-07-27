@@ -1,17 +1,26 @@
 package com.buckey.financetracker.data.db
 
 import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import com.buckey.financetracker.data.db.dao.TransactionDao
+import com.buckey.financetracker.data.db.dao.UnparsedMessageDao
+import com.buckey.financetracker.data.db.entities.TransactionEntity
+import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
 
-/**
- * Placeholder for Room database.
- *
- * Will be converted to a proper @Database class in Stage 2
- * when entities (TransactionEntity, UnparsedMessageEntity) are created.
- *
- * KSP does not accept @Database(entities = []), so this is a plain
- * singleton until Stage 2.
- */
-class AppDatabase private constructor() {
+@Database(
+    entities = [
+        TransactionEntity::class,
+        UnparsedMessageEntity::class
+    ],
+    version = 1,
+    exportSchema = false
+)
+abstract class AppDatabase : RoomDatabase() {
+
+    abstract fun transactionDao(): TransactionDao
+    abstract fun unparsedMessageDao(): UnparsedMessageDao
 
     companion object {
         @Volatile
@@ -19,7 +28,11 @@ class AppDatabase private constructor() {
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
-                val instance = AppDatabase()
+                val instance = Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "buckey_finance_db"
+                ).build()
                 INSTANCE = instance
                 instance
             }

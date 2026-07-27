@@ -59,6 +59,20 @@ What was built:
 
 **Done when:** Captured SMS persist in Room and survive app restart. Query them via Database Inspector in Android Studio.
 
+**Status: ✅ COMPLETE (2026-07-27)**
+
+What was built:
+- `TransactionType.kt` — enum with `DEBIT`, `CREDIT`
+- `TransactionEntity.kt` — Room entity with fields: id (auto PK), transactionId (SHA-256 hash, unique index), amount, date, merchant, type, accountLast4, rawRef, senderAddress, rawBody, category, syncedToSheets, createdAt
+- `UnparsedMessageEntity.kt` — Room entity with fields: id (auto PK), senderAddress, rawBody, receivedAt, failureReason, manuallyResolved
+- `TransactionDao.kt` — DAO: insert, insertAll, getAllTransactions (Flow), getByDateRange, getByTransactionId, updateCategory, markAsSynced, getUnsyncedTransactions
+- `UnparsedMessageDao.kt` — DAO: insert, insertAll, getUnresolvedMessages (Flow), getAllMessages, deleteById, markAsResolved, getById
+- `AppDatabase.kt` — proper `@Database(entities = [TransactionEntity, UnparsedMessageEntity])`, abstract DAO accessors, singleton pattern
+- `TransactionIdGenerator.kt` — SHA-256 hex hash of `senderAddress|receivedAt|rawBody` for stable dedup keys
+- `FinanceTrackerApp.kt` — lazy DB initialization, static `getInstance()` accessor
+- `SmsReceiver.kt` — on whitelisted SMS capture, creates `UnparsedMessageEntity` and inserts via coroutine scope
+- `SmsBackfill.kt` — batch-collects whitelisted messages, then bulk-inserts via `insertAll`
+
 ---
 
 ## Stage 3 — Parsing

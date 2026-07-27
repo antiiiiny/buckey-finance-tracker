@@ -6,6 +6,8 @@ import android.database.Cursor
 import android.net.Uri
 import android.provider.Telephony
 import android.util.Log
+import com.buckey.financetracker.FinanceTrackerApp
+import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
 
 /**
  * One-time query against the device's SMS inbox for historical messages
@@ -67,19 +69,35 @@ object SmsBackfill {
             )
 
             cursor?.use { c ->
+                val unparsedMessages = mutableListOf<UnparsedMessageEntity>()
+
                 while (c.moveToNext()) {
                     val address = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.ADDRESS))
                     val body = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.BODY))
                     val dateSent = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.DATE_SENT))
-                    val id = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox._ID))
+                    val smsId = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox._ID))
 
                     if (SenderWhitelist.isWhitelisted(address)) {
                         matchedCount++
-                        Log.i(TAG, "Backfill matched #$id — sender: $address, " +
+                        Log.i(TAG, "Backfill matched #${smsId} — sender: $address, " +
                                 "date: $dateSent, body: $body")
 
-                        // Stage 2 TODO: persist to UnparsedMessageEntity
+                        unparsedMessages.add(
+                            UnparsedMessageEntity(
+                                senderAddress = address,
+                                rawBody = body,
+                                receivedAt = dateSent
+                            )
+                        )
                     }
+                }
+
+                // Batch persist
+                if (unparsedMessages.isNotEmpty()) {
+                    val app = FinanceTrackerApp.getInstance()
+                    val dao = app.database.unparsedMessageDao()
+                    dao.insertAll(unparsedMessages)
+                    Log.i(TAG, "Persisted ${unparsedMessages.size} backfill messages to Room")
                 }
             }
         } catch (e: SecurityException) {
