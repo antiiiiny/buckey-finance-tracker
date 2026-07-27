@@ -8,6 +8,8 @@ import android.provider.Telephony
 import android.util.Log
 import com.buckey.financetracker.FinanceTrackerApp
 import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 /**
  * One-time query against the device's SMS inbox for historical messages
@@ -92,11 +94,13 @@ object SmsBackfill {
                     }
                 }
 
-                // Batch persist
+                // Batch persist (one-time init call — safe to block IO)
                 if (unparsedMessages.isNotEmpty()) {
-                    val app = FinanceTrackerApp.getInstance()
-                    val dao = app.database.unparsedMessageDao()
-                    dao.insertAll(unparsedMessages)
+                    runBlocking(Dispatchers.IO) {
+                        val app = FinanceTrackerApp.getInstance()
+                        val dao = app.database.unparsedMessageDao()
+                        dao.insertAll(unparsedMessages)
+                    }
                     Log.i(TAG, "Persisted ${unparsedMessages.size} backfill messages to Room")
                 }
             }
