@@ -6,7 +6,11 @@ import android.content.Intent
 import android.provider.Telephony
 import android.util.Log
 import com.buckey.financetracker.FinanceTrackerApp
+import com.buckey.financetracker.data.db.entities.TransactionEntity
+import com.buckey.financetracker.data.db.entities.TransactionType
 import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
+import com.buckey.financetracker.data.parser.ParsedTransaction
+import com.buckey.financetracker.data.parser.banks.SibParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,10 +20,9 @@ import kotlinx.coroutines.launch
  * BroadcastReceiver that intercepts incoming SMS messages.
  *
  * Only processes messages from sender IDs in [SenderWhitelist].
- * All other messages are silently ignored — they are not passed to the parser.
+ * All other messages are silently ignored.
  *
- * Matched messages are persisted to [UnparsedMessageEntity] in Room.
- * Stage 3 will add parsing — on success, write [TransactionEntity]; on failure, stays unparsed.
+ * Pipeline: SMS -> whitelist gate -> SibParser -> success: TransactionEntity, failure: UnparsedMessageEntity
  */
 class SmsReceiver : BroadcastReceiver() {
 
@@ -44,26 +47,43 @@ class SmsReceiver : BroadcastReceiver() {
 
         Log.i(TAG, "Whitelisted SMS captured — sender: $senderAddress, body: $fullBody")
 
-        // Persist to Room as unparsed
-        val receivedAt = System.currentTimeMillis()
+        // Run parser pipeline
         scope.launch {
             try {
                 val app = FinanceTrackerApp.getInstance()
-                val dao = app.database.unparsedMessageDao()
+                val parsed: ParsedTransaction? = SibParser.parse(senderAddress, fullBody)
 
-                val entity = UnparsedMessageEntity(
-                    senderAddress = senderAddress,
-                    rawBody = fullBody,
-                    receivedAt = receivedAt
-                )
-                dao.insert(entity)
-                Log.i(TAG, "Persisted unparsed message from: $senderAddress")
+                if (parsed != null) {
+                    // Parse succeeded — write TransactionEntity
+                    val transaction = TransactionEntity(
+                        transactionId = TransactionIdGenerator.generate(
+                            senderAddress, System.currentTimeMillis(), fullBody
+                        ),
+                        amount = parsed.amount,
+                        date = parsed.date.toEpochMilli(),
+                        merchant = parsed.merchant,
+                        type = parsed.type,
+                        accountLast4 = parsed.accountLast4,
+                        rawRef = parsed.rawRef,
+                        senderAddress = senderAddress,
+                        rawBody = fullBody
+                    )
+                    app.database.transactionDao().insert(transaction)
+                    Log.i(TAG, "Parsed and saved transaction: ${parsed.type} Rs.${parsed.amount}")
+                } else {
+                    // Parse failed — persist as unparsed
+                    val entity = UnparsedMessageEntity(
+                        senderAddress = senderAddress,
+                        rawBody = fullBody,
+                        failureReason = "No parser matched this SMS format"
+                    )
+                    app.database.unparsedMessageDao().insert(entity)
+                    Log.w(TAG, "Could not parse SMS from $senderAddress — saved as unparsed")
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to persist message: ${e.message}")
+                Log.e(TAG, "Error in SMS processing pipeline: ${e.message}")
             }
         }
-
-        // Stage 3 TODO: run through parser pipeline
     }
 
     companion object {

@@ -7,7 +7,9 @@ import android.net.Uri
 import android.provider.Telephony
 import android.util.Log
 import com.buckey.financetracker.FinanceTrackerApp
+import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
+import com.buckey.financetracker.data.parser.banks.SibParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 
@@ -96,12 +98,48 @@ object SmsBackfill {
 
                 // Batch persist (one-time init call — safe to block IO)
                 if (unparsedMessages.isNotEmpty()) {
-                    runBlocking(Dispatchers.IO) {
+                    val (parsedCount, unparsedCount) = runBlocking(Dispatchers.IO) {
                         val app = FinanceTrackerApp.getInstance()
-                        val dao = app.database.unparsedMessageDao()
-                        dao.insertAll(unparsedMessages)
+                        val txDao = app.database.transactionDao()
+                        val unparsedDao = app.database.unparsedMessageDao()
+                        val transactions = mutableListOf<TransactionEntity>()
+                        val failures = mutableListOf<UnparsedMessageEntity>()
+
+                        for (msg in unparsedMessages) {
+                            val parsed = SibParser.parse(msg.senderAddress, msg.rawBody)
+                            if (parsed != null) {
+                                transactions.add(
+                                    TransactionEntity(
+                                        transactionId = TransactionIdGenerator.generate(
+                                            msg.senderAddress, msg.receivedAt, msg.rawBody
+                                        ),
+                                        amount = parsed.amount,
+                                        date = parsed.date.toEpochMilli(),
+                                        merchant = parsed.merchant,
+                                        type = parsed.type,
+                                        accountLast4 = parsed.accountLast4,
+                                        rawRef = parsed.rawRef,
+                                        senderAddress = msg.senderAddress,
+                                        rawBody = msg.rawBody
+                                    )
+                                )
+                            } else {
+                                failures.add(msg.copy(
+                                    failureReason = "No parser matched this SMS format"
+                                ))
+                            }
+                        }
+
+                        if (transactions.isNotEmpty()) {
+                            txDao.insertAll(transactions)
+                        }
+                        if (failures.isNotEmpty()) {
+                            unparsedDao.insertAll(failures)
+                        }
+                        Pair(transactions.size, failures.size)
                     }
-                    Log.i(TAG, "Persisted ${unparsedMessages.size} backfill messages to Room")
+                    Log.i(TAG, "Persisted ${unparsedMessages.size} backfill messages " +
+                            "($parsedCount parsed, $unparsedCount unparsed)")
                 }
             }
         } catch (e: SecurityException) {

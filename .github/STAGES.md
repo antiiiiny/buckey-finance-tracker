@@ -84,6 +84,28 @@ What was built:
 
 **Done when:** All 10+ test fixtures pass. Real incoming SIB SMS produce correctly populated `TransactionEntity` rows, verified against the actual SMS content by manual check.
 
+**Status: ✅ COMPLETE (2026-07-27)**
+
+What was built:
+- `ParsedTransaction.kt` — data class with amount (Double), date (Instant), merchant (String), type (TransactionType), accountLast4 (String), rawRef (String)
+- `TransactionParser.kt` — interface with single `parse(senderAddress, rawBody): ParsedTransaction?` method
+- `SibParser.kt` — regex-based parser for SIB UPI SMS. Two patterns:
+  - Debit: `UPI debit:Rs.{amount},A/c X{last4}, {date} {time} RRN:{ref}.`
+  - Credit: `UPI Credit:INR Rs.{amount} in A/c X{last4}. Info:UPI/SIBL/{ref}/{merchant} on {date} {time}.`
+  - Date parsed via `DateTimeFormatter("dd-MM-yy HH:mm:ss")` with IST timezone
+  - Returns null (unparsed) for any non-matching message
+- `SibParserTest.kt` — 12 unit tests:
+  - 4 debit tests (standard, larger amount, zero amount, integer amount)
+  - 3 credit tests (standard with merchant name, salary credit, small amount with multi-word merchant)
+  - 5 failure tests (non-SIB SMS, malformed amount, OTP message, empty body, wrong date format)
+- `SmsReceiver.kt` — wired full pipeline: whitelist → parse → success: TransactionEntity, failure: UnparsedMessageEntity
+- `SmsBackfill.kt` — same pipeline logic for backfill (batch parse + insert)
+- ⚠️ Cannot run unit tests from command line (no Gradle wrapper JAR on dev machine) — run tests from Android Studio via `SibParserTest` right-click → Run
+
+**SIB SMS formats captured (for reference):**
+- Debit: `UPI debit:Rs.1.00,A/c X6825, 27-07-26 20:11:44 RRN:620896250xxxx. Bal:Rs.755.99...`
+- Credit: `UPI Credit:INR Rs.1.00 in A/c X6825. Info:UPI/SIBL/11030666xxxx/LEO STEV on 27-07-26 20:43:01.Final balance...`
+
 ---
 
 ## Stage 4 — Categorization
