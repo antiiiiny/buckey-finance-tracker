@@ -12,6 +12,10 @@ import android.util.Log
  * from whitelisted senders, run on first launch after SMS permission is granted.
  *
  * Uses a SharedPreferences flag to ensure it only runs once per install.
+ *
+ * NOTE: On Android 14+, non-default SMS apps cannot query content://sms/inbox
+ * even with READ_SMS permission. The query will fail gracefully with a log warning.
+ * Live SMS capture via BroadcastReceiver still works regardless.
  */
 object SmsBackfill {
 
@@ -30,6 +34,9 @@ object SmsBackfill {
     /**
      * Queries [Telephony.Sms.Inbox.CONTENT_URI] for SMS from whitelisted senders
      * and logs each matched message. Skips if backfill was already performed.
+     *
+     * On Android 14+, this will fail with SecurityException if the app is not
+     * the default SMS app. That's expected — we catch it gracefully.
      *
      * @return the number of whitelisted messages found
      */
@@ -51,27 +58,33 @@ object SmsBackfill {
             Telephony.Sms.Inbox._ID
         )
         val sortOrder = "${Telephony.Sms.Inbox.DATE_SENT} DESC"
-        val cursor: Cursor? = contentResolver.query(
-            uri, projection, null, null, sortOrder
-        )
 
         var matchedCount = 0
 
-        cursor?.use { c ->
-            while (c.moveToNext()) {
-                val address = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.ADDRESS))
-                val body = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.BODY))
-                val dateSent = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.DATE_SENT))
-                val id = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox._ID))
+        try {
+            val cursor: Cursor? = contentResolver.query(
+                uri, projection, null, null, sortOrder
+            )
 
-                if (SenderWhitelist.isWhitelisted(address)) {
-                    matchedCount++
-                    Log.i(TAG, "Backfill matched #$id — sender: $address, " +
-                            "date: $dateSent, body: $body")
+            cursor?.use { c ->
+                while (c.moveToNext()) {
+                    val address = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.ADDRESS))
+                    val body = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.BODY))
+                    val dateSent = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.DATE_SENT))
+                    val id = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox._ID))
 
-                    // Stage 2 TODO: persist to UnparsedMessageEntity
+                    if (SenderWhitelist.isWhitelisted(address)) {
+                        matchedCount++
+                        Log.i(TAG, "Backfill matched #$id — sender: $address, " +
+                                "date: $dateSent, body: $body")
+
+                        // Stage 2 TODO: persist to UnparsedMessageEntity
+                    }
                 }
             }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Backfill blocked by Android 14+ restriction: ${e.message}. " +
+                    "Live SMS capture via BroadcastReceiver still works.")
         }
 
         // Mark backfill as done (even if 0 messages found)

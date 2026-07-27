@@ -1,27 +1,25 @@
 package com.buckey.financetracker.data.db
 
 import android.content.Context
-import androidx.room.Database
-import androidx.room.Room
-import androidx.room.RoomDatabase
 
-@Database(
-    entities = [],
-    version = 1,
-    exportSchema = false
-)
-abstract class AppDatabase : RoomDatabase() {
+/**
+ * Placeholder for Room database.
+ *
+ * Will be converted to a proper @Database class in Stage 2
+ * when entities (TransactionEntity, UnparsedMessageEntity) are created.
+ *
+ * KSP does not accept @Database(entities = []), so this is a plain
+ * singleton until Stage 2.
+ */
+class AppDatabase private constructor() {
+
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabase::class.java,
-                    "buckey_finance_db"
-                ).build()
+                val instance = AppDatabase()
                 INSTANCE = instance
                 instance
             }
