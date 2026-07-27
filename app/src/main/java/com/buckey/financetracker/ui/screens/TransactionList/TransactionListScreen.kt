@@ -1,0 +1,1 @@
+// Placeholder — TransactionList screen will be built in Stage 4.

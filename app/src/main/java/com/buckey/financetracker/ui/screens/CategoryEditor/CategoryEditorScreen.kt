@@ -1,0 +1,1 @@
+// Placeholder — CategoryEditor screen will be built in Stage 4.

@@ -1,0 +1,1 @@
+// Placeholder — Room entities will be built in Stage 2.

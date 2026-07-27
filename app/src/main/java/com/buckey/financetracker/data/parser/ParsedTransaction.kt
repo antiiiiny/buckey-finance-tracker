@@ -1,0 +1,1 @@
+// Placeholder — ParsedTransaction data class will be built in Stage 3.

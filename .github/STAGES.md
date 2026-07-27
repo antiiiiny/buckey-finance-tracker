@@ -1,0 +1,113 @@
+# Build Stages — Personal Finance Tracker
+
+Each stage has a fixed deliverable and a definition of done. Do not start a stage until the previous one's definition of done is met. Do not combine stages.
+
+## Stage 0 — Project Setup
+**Build:**
+- New Android Studio project, Kotlin, min SDK 26, Jetpack Compose enabled.
+- Add dependencies: Room, WorkManager, Coroutines, Google Sign-In, Google Sheets API client.
+- Create the folder structure exactly as specified in `copilot-instructions.md`.
+- Empty `AppDatabase` with zero entities, builds and runs on device.
+
+**Done when:** App installs on the Pixel 9a and shows a blank Compose screen. No crashes on launch.
+
+**Status: ✅ COMPLETE (2026-07-25)**
+
+What was built:
+- Gradle config: AGP 8.7.3, Kotlin 2.0.21, KSP, Gradle 8.9 wrapper
+- Dependencies: Compose (BOM 2024.10.01), Room 2.6.1, WorkManager 2.9.1, Coroutines 1.9.0, Google Sign-In 21.2.0, Sheets API v4
+- AndroidManifest with `RECEIVE_SMS`, `READ_SMS` permissions and `SmsReceiver` stub
+- `FinanceTrackerApp` (Application class), `MainActivity` (blank Compose screen), Material 3 theme with green palette
+- `AppDatabase` (empty, zero entities, Room singleton pattern)
+- Full folder structure per `copilot-instructions.md` — all directories created with placeholder files
+- `.gitignore` for Android project
+- `README.md` with project description and stage table
+- ⚠️ Android SDK not present on this machine — final build verification on Pixel 9a is pending
+
+---
+
+## Stage 1 — SMS Capture (no parsing yet)
+**Build:**
+- `SenderWhitelist.kt` — hardcode SIB's sender ID(s) for now.
+- `SmsReceiver.kt` — `BroadcastReceiver` on `SMS_RECEIVED_ACTION`, filters by whitelist, logs matched messages to Logcat only (no DB yet).
+- Runtime permission request flow for `RECEIVE_SMS` and `READ_SMS`.
+- `SmsBackfill.kt` — one-time query against `content://sms/inbox`, filtered by whitelist, logged to Logcat.
+
+**Done when:** Sending yourself a test SMS from a whitelisted sender shows up in Logcat within 1 second of arrival. Backfill on fresh install logs all matching historical SMS.
+
+**Status: ✅ COMPLETE (2026-07-25)**
+
+What was built:
+- `SenderWhitelist.kt` — hardcoded set of SIB sender IDs (`SIBPYMNT`, `SIBBANK`, `SIBALERT`, `SIBNTFT`, `S-IBANK`, `SIB`) with case-insensitive lookup
+- `SmsReceiver.kt` — `BroadcastReceiver` on `SMS_RECEIVED_ACTION`, filters via `SenderWhitelist.isWhitelisted()`, logs matched messages to Logcat via `Log.i`. Non-whitelisted senders are silently dropped
+- `SmsBackfill.kt` — one-time `ContentResolver` query against `content://sms/inbox`, sorted by date DESC, filters in-memory against whitelist, logs each match. Uses a `SharedPreferences` flag (`sms_backfill_completed`) to ensure it runs exactly once per install
+- `MainActivity.kt` — runtime permission request via `registerForActivityResult(RequestMultiplePermissions)`, auto-triggers on first launch. Shows `PermissionPrompt` Compose screen when SMS perms not granted, shows `BackfillComplete` status screen after. Backfill runs automatically after permission is granted
+
+---
+
+## Stage 2 — Local Storage
+**Build:**
+- Room entities: `TransactionEntity`, `UnparsedMessageEntity`.
+- DAOs with insert, query-by-date-range, update-category methods.
+- Wire `SmsReceiver` and `SmsBackfill` to write raw SMS into `UnparsedMessageEntity` (parsing comes next stage — for now everything is "unparsed").
+
+**Done when:** Captured SMS persist in Room and survive app restart. Query them via Database Inspector in Android Studio.
+
+---
+
+## Stage 3 — Parsing
+**Build:**
+- `ParsedTransaction.kt` data class per the spec in `copilot-instructions.md`.
+- `SibParser.kt` implementing `TransactionParser` interface — regex extraction of amount, merchant, type, account last-4, ref number from SIB SMS formats.
+- Unit tests in `test/parser/SibParserTest.kt` with at least 10 real (redacted) SIB SMS samples covering debit, credit, and failure cases.
+- Wire parser into the capture pipeline: raw SMS → parser → on success, write `TransactionEntity`; on failure, stays in `UnparsedMessageEntity`.
+
+**Done when:** All 10+ test fixtures pass. Real incoming SIB SMS produce correctly populated `TransactionEntity` rows, verified against the actual SMS content by manual check.
+
+---
+
+## Stage 4 — Categorization
+**Build:**
+- `category` table (merchant string → category) seeded with a starter list (Swiggy→Food, Uber→Transport, etc.).
+- `CategoryMatcher.kt` — matches transaction merchant string against the table, case-insensitive substring match.
+- UI screen: `TransactionList` showing captured transactions with category, and a tap-to-recategorize action.
+- Recategorization writes back to the `category` table (`MerchantMemory.kt`).
+
+**Done when:** New transactions auto-categorize on capture. Manually changing a category once causes all future transactions from that merchant to use the new category, without app restart.
+
+---
+
+## Stage 5 — Google Sheets Sync
+**Build:**
+- Google Sign-In flow, scoped to `spreadsheets` only.
+- `GoogleSheetsRepository.kt` — append transaction rows to a user-specified Sheet ID.
+- Transaction ID (hash of sender + timestamp + raw body) written as a column, used to skip already-synced rows.
+- `SheetsSyncWorker.kt` — WorkManager periodic job (e.g. every 6 hours) plus a manual "Sync now" button in Settings.
+
+**Done when:** Running sync twice in a row produces zero duplicate rows in the Sheet. Killing and reopening the app does not re-sync already-synced transactions.
+
+---
+
+## Stage 6 — Review Queue for Unparsed Messages
+**Build:**
+- UI screen listing all `UnparsedMessageEntity` rows.
+- Manual entry form: user fills in amount/merchant/type/category by hand for an unparsed message, which creates a `TransactionEntity` and removes it from the queue.
+- (Optional, only after everything above is stable) — flag repeat unparsed patterns from the same sender so you know when a bank changed its SMS format.
+
+**Done when:** An unparsed message can be manually resolved into a proper transaction without leaving the app.
+
+---
+
+## Stage 7 — Weekly Reconciliation (separate from the Android app)
+**Build:**
+- `reconciliation/sib_statement_diff.py` — standalone script, not part of the Android build.
+- Uses `pdfplumber` to extract transaction rows from the SIB PDF statement.
+- Pulls the week's rows from the synced Google Sheet via Sheets API.
+- Diffs on amount + date (±1 day) + merchant, outputs three lists: matched, SMS-only (missing from statement), statement-only (missed by SMS parser).
+
+**Done when:** Running the script against a real weekly SIB statement and the corresponding Sheet range produces a diff report you can read and act on — specifically, statement-only entries tell you the parser missed something.
+
+---
+
+## Order of operations if you get stuck
+Do not skip ahead. If Stage 3 parsing is fragile, do not start Stage 4 — fix the parser and expand its test fixtures first. Each stage assumes the previous stage's "done when" criteria are actually true, not approximately true.

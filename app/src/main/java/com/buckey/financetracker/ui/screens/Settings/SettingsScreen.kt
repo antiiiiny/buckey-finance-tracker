@@ -1,0 +1,1 @@
+// Placeholder — Settings screen will be built in Stage 5.

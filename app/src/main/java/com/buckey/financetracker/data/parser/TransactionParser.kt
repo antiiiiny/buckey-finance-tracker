@@ -1,0 +1,1 @@
+// Placeholder — TransactionParser interface will be built in Stage 3.

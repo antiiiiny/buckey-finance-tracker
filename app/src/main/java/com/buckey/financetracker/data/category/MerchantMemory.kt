@@ -1,0 +1,1 @@
+// Placeholder — MerchantMemory will be built in Stage 4.

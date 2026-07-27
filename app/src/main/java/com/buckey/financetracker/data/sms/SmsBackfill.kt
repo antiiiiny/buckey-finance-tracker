@@ -1,0 +1,84 @@
+package com.buckey.financetracker.data.sms
+
+import android.content.ContentResolver
+import android.content.Context
+import android.database.Cursor
+import android.net.Uri
+import android.provider.Telephony
+import android.util.Log
+
+/**
+ * One-time query against the device's SMS inbox for historical messages
+ * from whitelisted senders, run on first launch after SMS permission is granted.
+ *
+ * Uses a SharedPreferences flag to ensure it only runs once per install.
+ */
+object SmsBackfill {
+
+    private const val TAG = "SmsBackfill"
+    private const val PREF_BACKFILL_DONE = "sms_backfill_completed"
+    private const val PREFS_NAME = "buckey_finance_prefs"
+
+    /**
+     * Returns true if backfill has already been completed.
+     */
+    fun isBackfillDone(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(PREF_BACKFILL_DONE, false)
+    }
+
+    /**
+     * Queries [Telephony.Sms.Inbox.CONTENT_URI] for SMS from whitelisted senders
+     * and logs each matched message. Skips if backfill was already performed.
+     *
+     * @return the number of whitelisted messages found
+     */
+    fun runBackfill(context: Context): Int {
+        if (isBackfillDone(context)) {
+            Log.d(TAG, "Backfill already completed, skipping")
+            return 0
+        }
+
+        val contentResolver: ContentResolver = context.contentResolver
+        val uri: Uri = Telephony.Sms.Inbox.CONTENT_URI
+
+        // We can't filter by sender in the query because sender IDs vary,
+        // so we fetch recent messages and filter in-memory
+        val projection = arrayOf(
+            Telephony.Sms.Inbox.ADDRESS,
+            Telephony.Sms.Inbox.BODY,
+            Telephony.Sms.Inbox.DATE_SENT,
+            Telephony.Sms.Inbox._ID
+        )
+        val sortOrder = "${Telephony.Sms.Inbox.DATE_SENT} DESC"
+        val cursor: Cursor? = contentResolver.query(
+            uri, projection, null, null, sortOrder
+        )
+
+        var matchedCount = 0
+
+        cursor?.use { c ->
+            while (c.moveToNext()) {
+                val address = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.ADDRESS))
+                val body = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.BODY))
+                val dateSent = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.DATE_SENT))
+                val id = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox._ID))
+
+                if (SenderWhitelist.isWhitelisted(address)) {
+                    matchedCount++
+                    Log.i(TAG, "Backfill matched #$id — sender: $address, " +
+                            "date: $dateSent, body: $body")
+
+                    // Stage 2 TODO: persist to UnparsedMessageEntity
+                }
+            }
+        }
+
+        // Mark backfill as done (even if 0 messages found)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(PREF_BACKFILL_DONE, true).apply()
+
+        Log.i(TAG, "Backfill complete — matched $matchedCount whitelisted messages")
+        return matchedCount
+    }
+}

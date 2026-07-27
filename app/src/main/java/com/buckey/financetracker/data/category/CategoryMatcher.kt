@@ -1,0 +1,1 @@
+// Placeholder — CategoryMatcher will be built in Stage 4.

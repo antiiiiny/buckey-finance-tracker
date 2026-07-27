@@ -1,0 +1,1 @@
+// Placeholder — GoogleSheetsRepository will be built in Stage 5.
