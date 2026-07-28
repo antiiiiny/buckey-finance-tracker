@@ -100,7 +100,7 @@ What was built:
   - 5 failure tests (non-SIB SMS, malformed amount, OTP message, empty body, wrong date format)
 - `SmsReceiver.kt` — wired full pipeline: whitelist → parse → success: TransactionEntity, failure: UnparsedMessageEntity
 - `SmsBackfill.kt` — same pipeline logic for backfill (batch parse + insert)
-- ⚠️ Cannot run unit tests from command line (no Gradle wrapper JAR on dev machine) — run tests from Android Studio via `SibParserTest` right-click → Run
+- **Tests: All 12/12 passed** in Android Studio (verified manually on-device)
 
 **SIB SMS formats captured (for reference):**
 - Debit: `UPI debit:Rs.1.00,A/c X6825, 27-07-26 20:11:44 RRN:620896250xxxx. Bal:Rs.755.99...`
