@@ -6,6 +6,7 @@ import android.content.Intent
 import android.provider.Telephony
 import android.util.Log
 import com.buckey.financetracker.FinanceTrackerApp
+import com.buckey.financetracker.data.category.CategoryMatcher
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.db.entities.TransactionType
 import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
@@ -54,6 +55,11 @@ class SmsReceiver : BroadcastReceiver() {
                 val parsed: ParsedTransaction? = SibParser.parse(senderAddress, fullBody)
 
                 if (parsed != null) {
+                    // Auto-categorize
+                    val category = CategoryMatcher.getCategory(
+                        app.database, parsed.merchant
+                    )
+
                     // Parse succeeded — write TransactionEntity
                     val transaction = TransactionEntity(
                         transactionId = TransactionIdGenerator.generate(
@@ -66,10 +72,11 @@ class SmsReceiver : BroadcastReceiver() {
                         accountLast4 = parsed.accountLast4,
                         rawRef = parsed.rawRef,
                         senderAddress = senderAddress,
-                        rawBody = fullBody
+                        rawBody = fullBody,
+                        category = category
                     )
                     app.database.transactionDao().insert(transaction)
-                    Log.i(TAG, "Parsed and saved transaction: ${parsed.type} Rs.${parsed.amount}")
+                    Log.i(TAG, "Parsed and saved transaction: ${parsed.type} Rs.${parsed.amount} [$category]")
                 } else {
                     // Parse failed — persist as unparsed
                     val entity = UnparsedMessageEntity(

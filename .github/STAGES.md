@@ -117,6 +117,20 @@ What was built:
 
 **Done when:** New transactions auto-categorize on capture. Manually changing a category once causes all future transactions from that merchant to use the new category, without app restart.
 
+**Status: ✅ COMPLETE (2026-07-28)**
+
+What was built:
+- `CategoryRuleEntity.kt` — Room entity with merchantPattern (unique index) and category fields
+- `CategoryDao.kt` — DAO with getAllRules (Flow), insertOrUpdate, findMatch (SQL LIKE substring match), deleteById
+- `AppDatabase.kt` — version 2 with CategoryRuleEntity, CategoryDao, fallbackToDestructiveMigration, and SEED_CALLBACK with 25 starter rules (Food, Transport, Shopping, Groceries, Utilities, Housing, Income, Transfer, Entertainment)
+- `CategoryMatcher.kt` — matches merchant string against rules via SQL `LIKE '%pattern%'`, returns "Uncategorized" if no match
+- `MerchantMemory.kt` — saves/updates merchant→category mapping when user recategorizes
+- `TransactionListScreen.kt` — Compose screen with TopAppBar, LazyColumn of TransactionCards showing merchant, amount (color-coded red/green), date, category badge. Empty state when no transactions
+- `CategoryEditorScreen.kt` — shows transaction details, ExposedDropdownMenu with 15 category options, save button that writes to both category_rules (MerchantMemory) and updates the transaction's category
+- `MainActivity.kt` — replaced BackfillComplete screen with NavHost (transaction_list → category_editor/{id} routes)
+- `TransactionDao.kt` — added `getById(id)` query
+- `SmsReceiver.kt` — auto-categorizes via CategoryMatcher before inserting TransactionEntity
+
 ---
 
 ## Stage 5 — Google Sheets Sync

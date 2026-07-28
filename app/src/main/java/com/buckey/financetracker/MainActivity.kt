@@ -25,7 +25,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.buckey.financetracker.data.sms.SmsBackfill
+import com.buckey.financetracker.ui.screens.CategoryEditor.CategoryEditorScreen
+import com.buckey.financetracker.ui.screens.TransactionList.TransactionListScreen
 import com.buckey.financetracker.ui.theme.FinanceTrackerTheme
 
 class MainActivity : ComponentActivity() {
@@ -50,6 +57,8 @@ class MainActivity : ComponentActivity() {
             this, Manifest.permission.RECEIVE_SMS
         ) == PackageManager.PERMISSION_GRANTED
 
+        val database = (application as FinanceTrackerApp).database
+
         setContent {
             FinanceTrackerTheme {
                 Surface(
@@ -68,7 +77,33 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     } else {
-                        BackfillComplete(backfillCount)
+                        val navController = rememberNavController()
+                        NavHost(
+                            navController = navController,
+                            startDestination = "transaction_list"
+                        ) {
+                            composable("transaction_list") {
+                                TransactionListScreen(
+                                    database = database,
+                                    onTransactionTap = { txId ->
+                                        navController.navigate("category_editor/$txId")
+                                    }
+                                )
+                            }
+                            composable(
+                                route = "category_editor/{transactionId}",
+                                arguments = listOf(
+                                    navArgument("transactionId") { type = NavType.LongType }
+                                )
+                            ) { backStackEntry ->
+                                val txId = backStackEntry.arguments?.getLong("transactionId") ?: return@composable
+                                CategoryEditorScreen(
+                                    database = database,
+                                    transactionId = txId,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -122,40 +157,6 @@ private fun PermissionPrompt(onRequestPermission: () -> Unit) {
             ) {
                 Text("Grant SMS Permission")
             }
-        }
-    }
-}
-
-@androidx.compose.runtime.Composable
-private fun BackfillComplete(count: Int) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(32.dp)
-        ) {
-            Text(
-                text = "Buckey Finance Tracker",
-                style = MaterialTheme.typography.titleLarge
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = if (count > 0) {
-                    "Backfill complete — $count messages found"
-                } else {
-                    "No historical SMS found from whitelisted senders"
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Listening for new SMS…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }
