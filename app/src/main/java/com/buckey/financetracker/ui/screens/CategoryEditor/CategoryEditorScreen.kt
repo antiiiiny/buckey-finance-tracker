@@ -42,11 +42,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val SUGGESTED_CATEGORIES = listOf(
+private val PRESET_CATEGORIES = listOf(
     "Food", "Transport", "Shopping", "Groceries", "Utilities",
     "Housing", "Income", "Transfer", "Entertainment", "Health",
     "Education", "Travel", "Bills", "Other", "Uncategorized"
 )
+
+private const val CUSTOM_OPTION = "＋ Add custom category..."
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,6 +61,8 @@ fun CategoryEditorScreen(
     var transaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var selectedCategory by remember { mutableStateOf("") }
     var dropdownExpanded by remember { mutableStateOf(false) }
+    var showCustomInput by remember { mutableStateOf(false) }
+    var customCategory by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
 
     // Load transaction
@@ -137,7 +141,7 @@ fun CategoryEditorScreen(
                 onExpandedChange = { dropdownExpanded = !dropdownExpanded }
             ) {
                 OutlinedTextField(
-                    value = selectedCategory,
+                    value = selectedCategory.ifEmpty { customCategory },
                     onValueChange = {},
                     readOnly = true,
                     label = { Text("Category") },
@@ -150,16 +154,37 @@ fun CategoryEditorScreen(
                     expanded = dropdownExpanded,
                     onDismissRequest = { dropdownExpanded = false }
                 ) {
-                    SUGGESTED_CATEGORIES.forEach { category ->
+                    PRESET_CATEGORIES.forEach { category ->
                         DropdownMenuItem(
                             text = { Text(category) },
                             onClick = {
                                 selectedCategory = category
+                                customCategory = ""
+                                showCustomInput = false
                                 dropdownExpanded = false
                             }
                         )
                     }
+                    DropdownMenuItem(
+                        text = { Text(CUSTOM_OPTION, color = MaterialTheme.colorScheme.primary) },
+                        onClick = {
+                            showCustomInput = true
+                            dropdownExpanded = false
+                        }
+                    )
                 }
+            }
+
+            // Custom category text field
+            if (showCustomInput) {
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = customCategory,
+                    onValueChange = { customCategory = it },
+                    label = { Text("Enter custom category") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -167,27 +192,54 @@ fun CategoryEditorScreen(
             // Save button
             Button(
                 onClick = {
+                    val categoryToSave = if (customCategory.isNotBlank()) customCategory else selectedCategory
                     scope.launch {
-                        MerchantMemory.rememberCategory(database, tx.merchant, selectedCategory)
-                        database.transactionDao().updateCategory(tx.id, selectedCategory)
+                        if (!isGenericMerchant(tx.merchant)) {
+                            MerchantMemory.rememberCategory(database, tx.merchant, categoryToSave)
+                        }
+                        database.transactionDao().updateCategory(tx.id, categoryToSave)
+                        selectedCategory = categoryToSave
                         saved = true
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !saved
+                enabled = !saved && (selectedCategory.isNotEmpty() || customCategory.isNotBlank())
             ) {
                 Text(if (saved) "Saved!" else "Save Category")
             }
 
             if (saved) {
                 Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Future transactions from \"${tx.merchant}\" will " +
-                            "automatically be categorized as \"$selectedCategory\"",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                val displayCategory = if (customCategory.isNotBlank()) customCategory else selectedCategory
+                val merchant = tx.merchant
+                if (isGenericMerchant(merchant)) {
+                    Text(
+                        text = "Category updated to \"$displayCategory\" for this transaction only. " +
+                                "Full categorization will come from bank statement matching.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    Text(
+                        text = "Future transactions from \"$merchant\" will " +
+                                "automatically be categorized as \"$displayCategory\"",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
         }
     }
+}
+
+/**
+ * Returns true if the merchant name is a generic payment method (like "UPI")
+ * rather than a specific payee. Generic merchants should not create auto-category
+ * rules — real categorization will come from bank statement matching in Stage 7.
+ */
+private fun isGenericMerchant(merchant: String): Boolean {
+    return merchant.equals("UPI", ignoreCase = true) ||
+            merchant.equals("NEFT", ignoreCase = true) ||
+            merchant.equals("IMPS", ignoreCase = true) ||
+            merchant.equals("RTGS", ignoreCase = true)
 }
