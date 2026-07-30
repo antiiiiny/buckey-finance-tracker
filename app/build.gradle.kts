@@ -9,6 +9,13 @@ android {
     namespace = "com.buckey.financetracker"
     compileSdk = 35
 
+    val secretsFile = rootProject.file("secrets.properties")
+    val secrets = if (secretsFile.exists()) {
+        java.util.Properties().apply { load(secretsFile.inputStream()) }
+    } else {
+        java.util.Properties()
+    }
+
     defaultConfig {
         applicationId = "com.buckey.financetracker"
         minSdk = 26
@@ -20,6 +27,11 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        buildConfigField("String", "GOOGLE_CLIENT_ID",
+            "\"${secrets.getProperty("GOOGLE_CLIENT_ID", "")}\"")
+        buildConfigField("String", "GOOGLE_SHEET_ID",
+            "\"${secrets.getProperty("GOOGLE_SHEET_ID", "")}\"")
     }
 
     buildTypes {
@@ -42,6 +54,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 
