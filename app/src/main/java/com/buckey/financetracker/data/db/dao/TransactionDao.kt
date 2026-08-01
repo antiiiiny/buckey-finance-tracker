@@ -36,4 +36,7 @@ interface TransactionDao {
 
     @Query("SELECT * FROM transactions WHERE synced_to_sheets = 0 ORDER BY date DESC")
     suspend fun getUnsyncedTransactions(): List<TransactionEntity>
+
+    @Query("DELETE FROM transactions")
+    suspend fun deleteAll()
 }

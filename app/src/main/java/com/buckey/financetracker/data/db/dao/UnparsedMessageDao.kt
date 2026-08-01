@@ -30,4 +30,7 @@ interface UnparsedMessageDao {
 
     @Query("SELECT * FROM unparsed_messages WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): UnparsedMessageEntity?
+
+    @Query("DELETE FROM unparsed_messages")
+    suspend fun deleteAll()
 }

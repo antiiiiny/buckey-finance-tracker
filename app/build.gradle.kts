@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -10,10 +12,10 @@ android {
     compileSdk = 35
 
     val secretsFile = rootProject.file("secrets.properties")
-    val secrets = if (secretsFile.exists()) {
-        java.util.Properties().apply { load(secretsFile.inputStream()) }
-    } else {
-        java.util.Properties()
+    val secrets = Properties().apply {
+        if (secretsFile.exists()) {
+            secretsFile.inputStream().use { load(it) }
+        }
     }
 
     defaultConfig {

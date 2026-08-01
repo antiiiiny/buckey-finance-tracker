@@ -2,6 +2,7 @@ package com.buckey.financetracker
 
 import android.app.Application
 import com.buckey.financetracker.data.db.AppDatabase
+import com.buckey.financetracker.data.sheets.SheetsSyncWorker
 
 class FinanceTrackerApp : Application() {
 
@@ -11,6 +12,9 @@ class FinanceTrackerApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+
+        // Schedule periodic Google Sheets sync
+        SheetsSyncWorker.schedulePeriodic(this)
     }
 
     companion object {
