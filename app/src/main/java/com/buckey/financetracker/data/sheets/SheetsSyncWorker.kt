@@ -73,7 +73,7 @@ class SheetsSyncWorker(
 
             WorkManager.getInstance(context).enqueueUniqueWork(
                 ONE_TIME_SYNC_NAME,
-                ExistingWorkPolicy.KEEP,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
                 request
             )
             Log.i(TAG, "One-shot sync enqueued")

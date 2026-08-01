@@ -38,24 +38,40 @@ class GoogleSheetsRepository(private val context: Context) {
     private val sheetId: String get() = BuildConfig.GOOGLE_SHEET_ID
 
     /**
-     * Ensures the "Transactions" sheet has headers in the first row.
-     * Idempotent — if headers already exist, this is a no-op.
+     * Ensures the "Transactions" sheet exists and has headers.
+     * Creates the sheet if it doesn't exist — idempotent.
      */
     suspend fun ensureHeaders(): Boolean = withContext(Dispatchers.IO) {
         val service = sheetsService ?: return@withContext false
         try {
-            val existing = service.spreadsheets().values()
-                .get(sheetId, HEADER_RANGE)
-                .execute()
-
-            if (existing.values == null || existing.values.isEmpty()) {
-                val headerRange = ValueRange().setValues(listOf(HEADERS))
-                service.spreadsheets().values()
-                    .update(sheetId, HEADER_RANGE, headerRange)
-                    .setValueInputOption("RAW")
-                    .execute()
-                Log.i(TAG, "Headers written to sheet")
+            // Check if the "Transactions" sheet exists by getting spreadsheet metadata
+            val spreadsheet = service.spreadsheets().get(sheetId).execute()
+            val sheetExists = spreadsheet.sheets.any {
+                it.properties?.title == SHEET_NAME
             }
+
+            if (!sheetExists) {
+                // Create the sheet
+                val addRequest = com.google.api.services.sheets.v4.model.BatchUpdateSpreadsheetRequest().setRequests(
+                    listOf(
+                        com.google.api.services.sheets.v4.model.Request().setAddSheet(
+                            com.google.api.services.sheets.v4.model.AddSheetRequest().setProperties(
+                                com.google.api.services.sheets.v4.model.SheetProperties().setTitle(SHEET_NAME)
+                            )
+                        )
+                    )
+                )
+                service.spreadsheets().batchUpdate(sheetId, addRequest).execute()
+                Log.i(TAG, "Created sheet '$SHEET_NAME'")
+            }
+
+            // Now write headers
+            val headerRange = ValueRange().setValues(listOf(HEADERS))
+            service.spreadsheets().values()
+                .update(sheetId, HEADER_RANGE, headerRange)
+                .setValueInputOption("RAW")
+                .execute()
+            Log.i(TAG, "Headers ensured in sheet '$SHEET_NAME'")
             true
         } catch (e: GoogleJsonResponseException) {
             Log.w(TAG, "Failed to ensure headers: ${e.statusCode} ${e.message}")
@@ -78,8 +94,11 @@ class GoogleSheetsRepository(private val context: Context) {
 
             existing.values?.let { rows ->
                 for (row in rows) {
-                    if (row.isNotEmpty() && row[0].toString() == transactionId) {
-                        return@withContext true
+                    if (row is List<*>) {
+                        val first = row.firstOrNull()
+                        if (first != null && first.toString() == transactionId) {
+                            return@withContext true
+                        }
                     }
                 }
             }

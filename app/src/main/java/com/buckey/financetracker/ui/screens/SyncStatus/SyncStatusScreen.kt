@@ -133,7 +133,7 @@ fun SyncStatusScreen(
                             SheetsSyncWorker.enqueueOneShot(context)
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = isSignedIn && unsyncedCount > 0
+                        enabled = isSignedIn
                     ) {
                         Text("Sync Now")
                     }

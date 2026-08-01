@@ -26,7 +26,7 @@ object GoogleSignInHelper {
 
     private fun getSignInOptions(): GoogleSignInOptions {
         return GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-            .requestScopes(SheetsScopes.SPREADSHEETS)
+            .requestScopes(com.google.android.gms.common.api.Scope(SheetsScopes.SPREADSHEETS))
             .requestEmail()
             .build()
     }
