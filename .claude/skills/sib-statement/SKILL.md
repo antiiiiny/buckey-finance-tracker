@@ -125,7 +125,7 @@ or explicitly tell you to.
 
 ## 5. Back to the phone
 
-`out/merchant_map.json` → the Pixel → Settings → Import Merchant Map. If the phone
+`out/merchant_map.json` → the Pixel → Account → Bank statement → Import merchant map. If the phone
 is on adb, push the file yourself rather than handing the user a command.
 From Git Bash, disable path mangling or `/sdcard/...` turns into a Windows path:
 

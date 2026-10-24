@@ -20,6 +20,8 @@ object Spacing {
 object Sizes {
     /** Leading circle on a transaction row. */
     val avatar = 40.dp
+    /** Profile initial in the top bar. */
+    val profileAvatar = 32.dp
     /** Icon inside [avatar] and inline status icons. */
     val icon = 20.dp
     /** Status badge in the verify sheet and illustrations on empty screens. */

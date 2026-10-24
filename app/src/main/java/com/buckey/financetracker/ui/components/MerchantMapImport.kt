@@ -28,7 +28,7 @@ private const val TAG = "MerchantMapImport"
  * storage permission is needed (rule 11). [onResult] gets "Importing…", then
  * the import summary or an "Import failed: …" message.
  *
- * Shared by Settings → Import Merchant Map and the home screen's first-run
+ * Shared by Account → Bank statement and the home screen's first-run
  * "Import statements".
  */
 @Composable

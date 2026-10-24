@@ -47,7 +47,8 @@ cd reconciliation
 - `--apply` writes recovered merchant names into the Sheet; `--push` copies
   `out/merchant_map.json` to the phone over adb. Your rules in
   `private/category_rules.json` are included automatically.
-- Then on the phone: **Settings → Import Merchant Map**, then **Sync Now**.
+- Then on the phone: **Account → Bank statement → Import merchant map**, then
+  **Account → Profile → Sync now**.
 
 **Changing categories between statements** needs no PDF:
 
@@ -139,7 +140,8 @@ sync rewrites the Sheet's Category, Source and Categorized By cells (H:J).
 
 1. `--push` copies `out/merchant_map.json` to the phone's Download folder over
    adb. Without adb, move it however you like — Drive, USB, mail.
-2. In the app: **Settings → Import Merchant Map**, and pick the file.
+2. In the app: **Account → Bank statement → Import merchant map** (profile
+   initial, top right of Home), and pick the file.
 
 The picker uses the Storage Access Framework, so the app needs no storage
 permission (rule 11 caps what it may request). `MerchantMapImporter` then repairs
@@ -151,6 +153,13 @@ still generic, never relabels a transaction you categorized by hand, and does
 nothing on a second run. It also adds every statement row the app never recorded
 (`missing`). The app never re-appends a repaired row; `--apply` fixes the Sheet's
 merchant column and the next sync fixes its category cells.
+
+## Sheet dashboard
+
+The **Dashboard** tab is created by the app (since 2026-10-25): live formulas
+over Transactions, with month and "Spent shows" dropdowns and a category pie;
+see `data/sheets/DashboardSheetFormat.kt`. The desktop `sheet_dashboard.py` that
+first built it was retired then.
 
 ## How the extractor reads the PDF
 
@@ -197,7 +206,7 @@ plausible-but-wrong rows.
 .venv/Scripts/python -m unittest test_reconcile -v
 ```
 
-73 tests: RRN normalization, both match tiers, ambiguity handling, overlap scoping,
+75 tests: RRN normalization, both match tiers, ambiguity handling, overlap scoping,
 merchant-recovery gating, narration parsing against real SIB formats, missing-row
 references, rules-only maps, password-protected PDFs, and
 end-to-end extraction from a synthetic PDF built by `make_sample_pdf.py` in the

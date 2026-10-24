@@ -175,6 +175,38 @@ class SibParserTest {
         assertNull(result)
     }
 
+    // ==================== ATM TESTS ====================
+    // Shape of the user's real ATM alert (2026-10-25); location and balance changed.
+
+    private val atmSms = "A/c X6825 DEBIT:Rs.700.00 ATM-SIB MG ROAD Bal:Rs.1234.56 Block A/c?call 18004251809/SMS BLK<full A/c>to 9840777222-South Indian Bank"
+
+    @Test
+    fun `atm - withdrawal dated by arrival time`() {
+        val arrived = ZonedDateTime.of(2026, 10, 25, 18, 30, 0, 0, ZoneId.of("Asia/Kolkata")).toInstant()
+        val result = SibParser.parse("AD-SIBSMS-S", atmSms, arrived)
+
+        assertNotNull(result)
+        assertEquals(700.00, result!!.amount, 0.001)
+        assertEquals(TransactionType.DEBIT, result.type)
+        assertEquals("6825", result.accountLast4)
+        assertEquals("ATM MG ROAD", result.merchant)
+        assertEquals("", result.rawRef)
+        assertEquals("ATM Withdrawal", result.categoryHint)
+        assertEquals(arrived, result.date)
+        assertEquals(1234.56, SibParser.parseBalance(atmSms)!!, 0.001)
+    }
+
+    @Test
+    fun `atm - no arrival time means no parse`() {
+        assertNull(SibParser.parse("AD-SIBSMS-S", atmSms))
+    }
+
+    @Test
+    fun `atm - upi formats carry no category hint`() {
+        val sms = "UPI debit:Rs.1.00,A/c X6825, 27-07-26 20:11:44 RRN:620896250123. Bal:Rs.755.99-South Indian Bank"
+        assertNull(SibParser.parse("AD-SIBSMS-S", sms, java.time.Instant.EPOCH)!!.categoryHint)
+    }
+
     // ==================== BALANCE TESTS ====================
 
     @Test

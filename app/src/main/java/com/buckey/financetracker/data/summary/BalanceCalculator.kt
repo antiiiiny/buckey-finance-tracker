@@ -3,6 +3,7 @@ package com.buckey.financetracker.data.summary
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.db.entities.TransactionType
 import com.buckey.financetracker.data.parser.banks.SibParser
+import com.buckey.financetracker.data.wallet.Wallet
 import kotlin.math.roundToLong
 
 /** A rupee amount as whole paise, so sums are exact. */
@@ -52,7 +53,8 @@ object BalanceCalculator {
         transactions: List<TransactionEntity>,
         balanceOf: (TransactionEntity) -> Double? = { SibParser.parseBalance(it.rawBody) }
     ): RunningBalance? {
-        val ordered = transactions.sortedWith(compareBy({ it.date }, { it.id }))
+        // Cash rows never touch the bank account.
+        val ordered = transactions.filterNot(Wallet::isCash).sortedWith(compareBy({ it.date }, { it.id }))
         val quoted = ordered.map { tx -> balanceOf(tx)?.let(::toPaise) }
 
         val anchor = quoted.indexOfFirst { it != null }

@@ -1,5 +1,6 @@
 package com.buckey.financetracker.data.parser.banks
 
+import com.buckey.financetracker.data.category.Categories
 import com.buckey.financetracker.data.db.entities.TransactionType
 import com.buckey.financetracker.data.parser.ParsedTransaction
 import com.buckey.financetracker.data.parser.TransactionParser
@@ -15,6 +16,10 @@ import java.time.format.DateTimeFormatter
  *
  * **Debit:** `UPI debit:Rs.{amount},A/c X{last4}, {date} {time} RRN:{ref}. Bal:...`
  * **Credit:** `UPI Credit:INR Rs.{amount} in A/c X{last4}. Info:UPI/{bank}/{ref}/{merchant} on {date} {time}.Final balance...`
+ * **ATM:** `A/c X{last4} DEBIT:Rs.{amount} ATM-{bank} {location} Bal:Rs.{balance} ...`
+ * (user's sample, 2026-10-25). It carries no date and no reference: the date is
+ * the SMS arrival time, so it parses only when that is passed in, and the
+ * statement diff can match it by amount and date only.
  *
  * `{bank}` is the *payer's* bank code: SIBL when the sender also banks with SIB,
  * otherwise HDFC, ICIC, SBIN, PPIW (PhonePe wallet) and so on. It was once
@@ -38,7 +43,13 @@ object SibParser : TransactionParser {
         RegexOption.IGNORE_CASE
     )
 
-    override fun parse(senderAddress: String, rawBody: String): ParsedTransaction? {
+    // A/c X0000 DEBIT:Rs.700.00 ATM-SIB MG ROAD Bal:Rs.xxxx.xx Block A/c?call ...
+    private val atmPattern = Regex(
+        """A/c X(\w+) DEBIT:Rs\.(\d+\.?\d*) ATM-(\w+) (.+?) Bal:""",
+        RegexOption.IGNORE_CASE
+    )
+
+    override fun parse(senderAddress: String, rawBody: String, receivedAt: Instant?): ParsedTransaction? {
         // Try debit pattern first
         debitPattern.find(rawBody)?.let { match ->
             val amount = match.groupValues[1].toDoubleOrNull() ?: return null
@@ -73,6 +84,21 @@ object SibParser : TransactionParser {
                 type = TransactionType.CREDIT,
                 accountLast4 = accountLast4,
                 rawRef = rawRef
+            )
+        }
+
+        // Try ATM withdrawal
+        atmPattern.find(rawBody)?.let { match ->
+            val amount = match.groupValues[2].toDoubleOrNull() ?: return null
+            val date = receivedAt ?: return null
+            return ParsedTransaction(
+                amount = amount,
+                date = date,
+                merchant = "ATM ${match.groupValues[4].trim()}",
+                type = TransactionType.DEBIT,
+                accountLast4 = match.groupValues[1],
+                rawRef = "",
+                categoryHint = Categories.ATM_WITHDRAWAL
             )
         }
 

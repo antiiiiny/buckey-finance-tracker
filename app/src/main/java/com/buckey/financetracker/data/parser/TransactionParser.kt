@@ -1,5 +1,7 @@
 package com.buckey.financetracker.data.parser
 
+import java.time.Instant
+
 /**
  * Interface for bank-specific SMS parsers.
  *
@@ -14,7 +16,9 @@ interface TransactionParser {
      *
      * @param senderAddress The sender ID (e.g. "AX-SIBSMS-S")
      * @param rawBody The full SMS body text
+     * @param receivedAt When the SMS arrived. Only formats that carry no date of
+     *   their own use it (SIB's ATM alert); without it they return null.
      * @return A [ParsedTransaction] if parsing succeeds, null otherwise
      */
-    fun parse(senderAddress: String, rawBody: String): ParsedTransaction?
+    fun parse(senderAddress: String, rawBody: String, receivedAt: Instant? = null): ParsedTransaction?
 }

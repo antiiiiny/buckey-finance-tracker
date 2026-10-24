@@ -29,10 +29,11 @@ JAVA_HOME="/c/Program Files/Android/Android Studio/jbr" "$GRADLE" -p "/c/Antony/
 - If Android Studio has a build running at the same time, the two can fight over
   `app/build`. Ask the user before retrying.
 
-Current suites: `SibParserTest` (20), `UnparsedResolverTest` (13),
+Current suites: `SibParserTest` (23), `UnparsedResolverTest` (13),
 `MerchantMapImporterTest` (26), `CategoryUpdaterTest` (8), `CategoryMatcherTest` (4),
 `SheetCategorySyncTest` (5), `SheetRowFormatTest` (5), `BalanceCalculatorTest` (7),
-`MonthSummaryTest` (9), `FormatTest` (5). 102 in all.
+`LedgerTest` (18), `MonthSummaryTest` (9), `WalletTest` (5), `FormatTest` (5),
+`DashboardSheetTest` (5). 133 in all.
 
 Unit tests don't prove UI or device behaviour. For that, write steps with the
 `device-verify` skill.
@@ -43,7 +44,7 @@ Unit tests don't prove UI or device behaviour. For that, write steps with the
 cd "/c/Antony/Christ uni/buckey-finance-tracker/reconciliation" && .venv/Scripts/python -m unittest test_reconcile
 ```
 
-73 tests. The PDF tests need `reportlab` (from `requirements-dev.txt`, already
+75 tests. The PDF tests need `reportlab` (from `requirements-dev.txt`, already
 installed in the venv) and skip without it. If a skip count appears, say so rather
 than reporting everything green.
 

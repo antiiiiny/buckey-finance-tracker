@@ -8,7 +8,10 @@ Auth is separate from the Android app's: this uses a desktop OAuth client
 
 Column layout is fixed by GoogleSheetsRepository.HEADERS:
     A transaction_id | B amount | C date | D merchant | E type
-    F account_last4  | G raw_ref | H category
+    F account_last4  | G raw_ref | H category | I source
+
+Cash rows (Source "cash") are the user's wallet, not the bank, so they are
+skipped: the statement can never match them.
 """
 
 from __future__ import annotations
@@ -28,7 +31,9 @@ from models import SheetRow, TxnType
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 SHEET_NAME = "Transactions"
-DATA_RANGE = f"{SHEET_NAME}!A:H"
+DATA_RANGE = f"{SHEET_NAME}!A:I"
+#: Column I values the statement never contains: cash in hand (app, 2026-10-25).
+SOURCE_CASH = "cash"
 MERCHANT_COLUMN = "D"
 HEADER_ROWS = 1
 
@@ -130,11 +135,17 @@ def fetch_rows(service, sheet_id: str) -> list[SheetRow]:
     except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the operator
         raise SheetsError(f"Could not read {DATA_RANGE} from {sheet_id}: {exc}") from exc
 
-    values = response.get("values", [])
+    return rows_from_values(response.get("values", []))
+
+
+def rows_from_values(values: list) -> list[SheetRow]:
+    """Sheet values (header first) to bank rows; pure, so it is unit tested."""
     rows: list[SheetRow] = []
 
     for offset, raw in enumerate(values[HEADER_ROWS:], start=HEADER_ROWS + 1):
-        padded = list(raw) + [""] * (8 - len(raw))
+        padded = list(raw) + [""] * (9 - len(raw))
+        if str(padded[8]).strip().lower() == SOURCE_CASH:
+            continue  # wallet row: no bank statement line to match
         transaction_id = str(padded[0]).strip()
         amount = _to_decimal(padded[1])
         when = _to_datetime(padded[2])

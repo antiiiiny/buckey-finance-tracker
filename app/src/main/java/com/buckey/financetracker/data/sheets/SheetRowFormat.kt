@@ -2,6 +2,7 @@ package com.buckey.financetracker.data.sheets
 
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.importer.MerchantMapImporter
+import com.buckey.financetracker.data.wallet.Wallet
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -38,10 +39,16 @@ object SheetRowFormat {
     const val SOURCE_SMS = "sms"
     const val SOURCE_STATEMENT = "bank_statement"
 
+    /** Wallet rows the user entered (2026-10-25). */
+    const val SOURCE_CASH = "cash"
+
     private const val UNCATEGORIZED = "Uncategorized"
 
-    fun source(tx: TransactionEntity): String =
-        if (tx.senderAddress == MerchantMapImporter.STATEMENT_SENDER) SOURCE_STATEMENT else SOURCE_SMS
+    fun source(tx: TransactionEntity): String = when (tx.senderAddress) {
+        MerchantMapImporter.STATEMENT_SENDER -> SOURCE_STATEMENT
+        Wallet.CASH_SENDER -> SOURCE_CASH
+        else -> SOURCE_SMS
+    }
 
     /** The H:J cells: category, source, categorized by. */
     fun mutableValues(tx: TransactionEntity): List<String> =

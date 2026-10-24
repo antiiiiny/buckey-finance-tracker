@@ -21,6 +21,7 @@ import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.db.entities.TransactionType
 import com.buckey.financetracker.data.summary.MonthSummary
 import com.buckey.financetracker.data.summary.toPaise
+import com.buckey.financetracker.data.wallet.Wallet
 import com.buckey.financetracker.ui.format.MoneyFormat
 import com.buckey.financetracker.ui.theme.Spacing
 
@@ -41,8 +42,13 @@ fun TransactionRow(
     val merchant = transaction.merchant.ifBlank { "Unknown" }
     val category = if (MonthSummary.isUncategorized(transaction)) "Uncategorized"
     else transaction.category.orEmpty()
+    val cash = Wallet.isCash(transaction)
+    // Who a loan or holding is with, when the row carries one.
+    val who = transaction.counterparty?.takeIf { it.isNotBlank() }
+    val detail = listOfNotNull(category, who, whenText).joinToString(" · ")
     val description = (if (credit) "Credit, ${MoneyFormat.spoken(paise)}, from $merchant"
-    else "Debit, ${MoneyFormat.spoken(paise)}, to $merchant") + ", $category, $whenText"
+    else "Debit, ${MoneyFormat.spoken(paise)}, to $merchant") +
+        (if (cash) ", cash" else "") + ", " + listOfNotNull(category, who, whenText).joinToString(", ")
 
     Row(
         modifier = modifier
@@ -57,7 +63,7 @@ fun TransactionRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Spacing.md)
     ) {
-        CategoryAvatar(category = transaction.category, type = transaction.type)
+        CategoryAvatar(category = transaction.category, type = transaction.type, cash = cash)
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = merchant,
@@ -67,7 +73,7 @@ fun TransactionRow(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "$category · $whenText",
+                text = detail,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

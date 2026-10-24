@@ -36,12 +36,15 @@ layer — the wiring is inline in the entry points themselves.
                        └─ markAsSynced() → sortByDate()
                        └─ SheetCategorySync: dirty rows → H:J in place
                                           ──► Google Sheets "Transactions" tab
+                       └─ holding rows out of Transactions → "Holdings" tab
+                       └─ once per layout version: DashboardSheetFormat ──► "Dashboard"
+                          tab (formulas over Transactions; never written again)
 
     unparsed_messages ──► PendingScreen → ResolveMessageScreen (Stage 6)
                        └─ UnparsedResolver.resolve()  ──► transactions + markAsResolved
                        └─ UnparsedResolver.dismiss()  ──► markAsResolved only
 
-    merchant_map.json ──► MerchantMapImporter (Settings, user picks the file)
+    merchant_map.json ──► MerchantMapImporter (Account → Bank statement, user picks the file)
                        └─ saves rules, repairs transactions.merchant by transaction_id
                        └─ inserts statement rows the SMS path missed
                        └─ relabels rows by rule, then overrides (never manual rows)
@@ -50,9 +53,14 @@ layer — the wiring is inline in the entry points themselves.
     transactions ──► HomeScreen (read-only; redesign 2026-10-24)
                        └─ BalanceCalculator: earliest SMS "Bal:" + every later row
                           = running balance; checked against the latest SMS balance
-                       └─ MonthSummary: spent (debits minus transfers and repayments,
-                          or every debit), month net,
-                          day/month groups
+                       └─ Ledger: each row's effect on Spent, Net, wallet, lent,
+                          holding (table in .github/design/wallet.md)
+                       └─ MonthSummary: sums the ledger per month / day
+
+    user's choices ──► data/wallet: CashBook (cash payments, counts),
+                       Links (cash / lend / holding / payout / repayment)
+                       └─ synced: cash rows → Transactions (Source cash);
+                          holding rows → Holdings tab only (rule 10 (d))
 
 Room is the source of truth (rule 8). Sheets is a synced copy keyed by
 `transaction_id`: rows are appended once and sorted into date order; the only
@@ -64,20 +72,34 @@ Key files:
 - `data/sms/SmsReceiver.kt` — live capture + full pipeline, the real orchestrator
 - `data/sms/SmsBackfill.kt` — historical capture, parallel copy of the same logic
 - `data/parser/banks/SibParser.kt` — the only parser
-- `data/db/AppDatabase.kt` — 3 entities, v4 (`MIGRATION_2_3` adds `category_dirty`, `MIGRATION_3_4` adds `categorized_by`), seeded with 22 category rules
+- `data/db/AppDatabase.kt` — 3 entities, v5 (`MIGRATION_2_3` adds `category_dirty`, `MIGRATION_3_4` adds `categorized_by`, `MIGRATION_4_5` adds the link columns and renames debit Self Transfer → Savings), seeded with 22 category rules
 - `data/sheets/SheetsSyncWorker.kt` — the only network caller
 - `data/importer/MerchantMapImporter.kt` — applies the Stage 7 merchant map to Room
 - `data/review/UnparsedResolver.kt` — Stage 6: manual entry → `TransactionEntity`
 - `data/category/GenericMerchant.kt` — the one definition of "UPI-like" merchant
-- `data/summary/` — `BalanceCalculator` (running balance + SMS check, in paise),
-  `MonthSummary` (spent, month net, grouping), `HomePreferences` (Settings →
-  Net shows / Spent shows)
-- `MainActivity.kt` — permissions, NavHost, bottom bar (Home · Pending · Settings);
-  screens take `AppDatabase` directly
+- `data/summary/` — `Ledger` (the money model: every row's effect on Spent,
+  Net, wallet, loans, holdings; suggestions), `BalanceCalculator` (bank balance
+  + SMS check, skips cash rows), `MonthSummary` (sums per month/day),
+  `HomePreferences` (Net/Spent shows, matching range, profile name, dismissed
+  suggestions)
+- `data/wallet/` — `Wallet` (cash-row constants), `CashBook` (cash payments and
+  counts), `Links` (the user's cash / lend / holding links), `LinkSuggestions`
+- `data/category/Categories.kt` — category names with meaning (Savings, ATM
+  Withdrawal, Lend, Loan Repaid, Holding, Wallet Adjustment) and the preset lists
+- `MainActivity.kt` — permissions, NavHost, bottom bar (Home · Pending); the
+  profile initial on Home opens `ui/screens/Account/` (Profile, Preferences,
+  Bank statement). Screens take `AppDatabase` directly
 - `ui/theme/` — palette (`Theme.kt`), 4-size type scale (`Type.kt`), `Spacing`/`Sizes`
 - `ui/components/` — `TransactionRow`, `CategoryAvatar`, the shared merchant-map
   import launcher, `ThemePreviews` + fake `PreviewData`
 - `.github/design/home-screen.md` — the approved home brief and decisions behind it
+- `data/sheets/DashboardSheetFormat.kt` + `DashboardSheetRequests.kt` — the
+  Sheet's **Dashboard** tab: live formulas over Transactions, created by the app
+  once per `LAYOUT_VERSION` (first sync after install or after a layout change);
+  otherwise a sync never writes it. Month and "Spent shows" dropdowns; Spent /
+  Income / Net (month's change) / vs last month / avg per day last week; a
+  category pie and two monthly charts. Replaced the desktop `sheet_dashboard.py`
+  (2026-10-25). `HoldingsSheetFormat` writes the Holdings tab from Room.
 
 ### The backfill path is mostly theoretical
 
@@ -118,7 +140,7 @@ chosen deliberately over a generic amount/date extractor:
 3. **Format changes are detectable.** When a bank changes its template, the
    regex stops matching and messages pile up in `unparsed_messages` from one
    sender — a signal. A fuzzy parser would keep producing degraded output.
-4. **It is testable without a device.** `SibParserTest` runs 20 fixtures as plain
+4. **It is testable without a device.** `SibParserTest` runs 23 fixtures as plain
    JVM unit tests. Rule 13: no parser ships without a test file of real (redacted)
    SMS.
 
@@ -127,12 +149,15 @@ fixtures. That is the accepted trade.
 
 ### Known parser limits — read before touching categorization
 
-`SibParser` handles exactly two formats, both UPI:
+`SibParser` handles three formats, two UPI and the ATM alert:
 
 - Debit: `UPI debit:Rs.{amt},A/c X{last4}, {dd-MM-yy HH:mm:ss} RRN:{ref}.`
 - Credit: `UPI Credit:INR Rs.{amt} in A/c X{last4}. Info:UPI/{bank}/{ref}/{payee} on {date}.`
   `{bank}` is the payer's bank (SIBL, HDFC, ICIC, SBIN, PPIW…). It was hardcoded
   to SIBL until 2026-10-24, which queued every credit from another bank.
+- ATM: `A/c X{last4} DEBIT:Rs.{amt} ATM-{bank} {location} Bal:Rs.{bal} ...`
+  (user's sample, 2026-10-25). No date and no reference: the date is the SMS
+  arrival time, passed in as `receivedAt`; category hint "ATM Withdrawal".
 
 **The debit SMS contains no payee, so `SibParser` hardcodes `merchant = "UPI"`.**
 This is the single most important fact about the current system. Consequences:
@@ -148,7 +173,7 @@ This is the single most important fact about the current system. Consequences:
   extractor pointed at a debit SMS can only invent one. The fix has to come from
   a second data source, not from better parsing.
 
-Not handled at all: ATM withdrawals, POS/card, NEFT/IMPS/RTGS, cheque, e-mandate,
+Not handled at all: POS/card, NEFT/IMPS/RTGS, cheque, e-mandate,
 failed/reversed transactions, and any SIB template without the trailing `.` after
 the RRN. All of these currently land in `unparsed_messages`.
 
@@ -183,7 +208,15 @@ becomes Transfer (`CategoryMatcher.forType`). Enforced at capture, in bulk SQL
 Abel; money *from* Abel is Transfer. Income comes from explicit rules only
 (`joy john` — Joy John Ukken; John Joy Ukken is a different person, Transfer).
 Credit SMS truncate the payer to 8 characters ("JOY JOHN", "RHEA GRA"), so
-credit rules must match the truncated form.
+credit rules must match the truncated form. Since 2026-10-25 a credit may also be
+Holding, Loan Repaid or (cash rows) Wallet Adjustment, set only through
+`data/wallet/Links`. Money between the user's own accounts is **Savings** going
+out and **Self Transfer** coming in (`forType` maps a rule either way).
+
+**Wallet, loans and holdings (2026-10-25).** Net = bank + wallet + lent −
+holding; `data/summary/Ledger` decides each row's effect, and
+`.github/design/wallet.md` has the table and the reasons. A link is only ever the
+user's choice: bulk category writes skip linked rows, a single-row edit unlinks.
 
 **The Sheet is kept in date order, with two extra columns.** Layout lives in
 `SheetRowFormat`: A–H as before, then **I Source** (`sms` / `bank_statement`, from
@@ -193,7 +226,7 @@ credit rules must match the truncated form.
 only mark rows whose category actually changes, so `auto` keeps meaning "the
 rules got it right on arrival". After appending, the sync sorts the tab by the
 Date column. The first sync on DB v4 (`MIGRATION_3_4`) rebuilds the whole tab
-from Room — backup tab first — and Settings → Rebuild Google Sheet repeats that.
+from Room — backup tab first — and Account → Profile → Rebuild Google Sheet repeats that.
 `--rules-only --backfill-categorized-by` (one-off) labels pre-v4 rows by the rule
 that categorizes them.
 
@@ -213,7 +246,7 @@ RRN-exact matches unless `--allow-fuzzy-merchant` is passed. See
 `reconciliation/README.md`.
 
 **Room catches up via the importer.** `data/importer/MerchantMapImporter.kt`
-reads `merchant_map.json` (Settings → Import Merchant Map, via the Storage Access
+reads `merchant_map.json` (Account → Bank statement → Import merchant map, via the Storage Access
 Framework so no new permission is needed) and repairs `transactions.merchant` by
 `transaction_id`, then recomputes the category — once a debit says "BLINKIT" it
 matches the seeded `blinkit → Groceries` rule for the first time. Only generic
@@ -258,13 +291,13 @@ on `SEED_CATEGORIES` in `AppDatabase.kt` for why, and do not re-add them.
 |---|---|
 | 0 Project setup | Done. AGP 8.7.3, Kotlin 2.0.21, Gradle 8.9, KSP, compileSdk 35, minSdk 26. |
 | 1 SMS capture | Done, verified on-device. Backfill blocked on Android 14+ by design. |
-| 2 Local storage | Done. 3 entities, 3 DAOs, `AppDatabase` v4 (real migrations from v2; never rely on the destructive fallback). |
-| 3 Parsing | Done for UPI debit/credit only, plus `parseBalance` (the SMS's quoted balance, for Home). 20 passing unit tests. See limits above. |
+| 2 Local storage | Done. 3 entities, 3 DAOs, `AppDatabase` v5 (real migrations from v2; never rely on the destructive fallback). |
+| 3 Parsing | Done for UPI debit/credit and ATM withdrawals, plus `parseBalance` (the SMS's quoted balance, for Home). 23 passing unit tests. See limits above. |
 | 4 Categorization | Done, but only reaches credits. Debits have no payee to match on and land as "Uncategorized" by design. |
 | 5 Sheets sync | Done and working. Deviations: sheet ID is baked in at build time from `secrets.properties` into `BuildConfig.GOOGLE_SHEET_ID` rather than user-entered; sync interval is 15 min, not the 6 h the spec suggests. |
 | 4.5 On-device fallback | Proposed, not started. See below. |
 | 6 Review queue | **Done, verified on device (2026-10-24).** Now the Pending tab (with uncategorized rows), manual entry form, dismiss, 13 unit tests. Per-sender format-change flagging not built. |
-| 7 Reconciliation | **Done.** `reconciliation/` — PDF diff + RRN join + merchant write-back, 73 tests. **Verified on a real 3-month statement** (2026-10-24): 374 rows, 0 balance failures; diff matched 112/171 (109 by RRN). **Round trip verified on device (2026-10-24):** `--apply` wrote 84 merchants; import applied 84/84 fixes, added 59 statement-only rows, cleared 11 from Review, 0 duplicate RRNs; Sheet = Room + header. |
+| 7 Reconciliation | **Done.** `reconciliation/` — PDF diff + RRN join + merchant write-back, 75 tests. **Verified on a real 3-month statement** (2026-10-24): 374 rows, 0 balance failures; diff matched 112/171 (109 by RRN). **Round trip verified on device (2026-10-24):** `--apply` wrote 84 merchants; import applied 84/84 fixes, added 59 statement-only rows, cleared 11 from Review, 0 duplicate RRNs; Sheet = Room + header. |
 
 `.github/STAGES.md` is the stage spec, with status blocks for every stage built.
 When a stage completes, update it there as well as here.
@@ -436,7 +469,8 @@ violate accidentally:
 - Non-whitelisted senders are rejected at the receiver, before the parser.
 - Whitelisted SMS that fail to parse are persisted, never dropped.
 - Sheets rows are appended once and deduped on `transaction_id`; only the
-  Category cell of a synced row may be rewritten (rule 10, amended).
+  H:J cells of a synced row may be rewritten, and a row becomes deletable only by
+  turning into a holding (rule 10, amended 2026-10-24 and 2026-10-25).
 - Schema changes need a real `Migration`. `fallbackToDestructiveMigration()` is
   still set, so a version bump without one wipes the user's data.
 - Raw SMS bodies stay in Room for debugging: never logged, never networked,
@@ -477,16 +511,20 @@ violate accidentally:
 - **One queued credit still fails to parse** (UTIB payer, payee contains a
   character outside `[\w\s]`). Parser work is otherwise deferred by the user.
 - **Tier 3 is closed end to end**, but the round trip is manual: run the script
-  on a desktop, move `out/merchant_map.json` to the phone, import it in Settings.
+  on a desktop, move `out/merchant_map.json` to the phone, import it in
+  Account → Bank statement.
   There is no automation of that hop and, given rule 11's permission cap, that is
   probably correct.
-- **UI redesign (2026-10-24) — built, unit-tested, not yet verified on device.**
-  Home (summary, running balance + verify sheet, day/month groups), Pending tab
-  (Review queue + uncategorized), Sync and "Open in Google Sheets" in Settings,
-  Net shows / Spent shows choices, own palette, type scale and spacing tokens,
-  `enableEdgeToEdge()`. Brief:
-  `.github/design/home-screen.md`. Not yet brought in line with the UI rules:
-  `CategoryEditorScreen`, `ResolveMessageScreen` (their text fields also lack
+- **UI redesign (2026-10-24) + wallet round (2026-10-25) — built,
+  unit-tested, not yet verified on device.** Home (summary, Net breakdown, money
+  sheet, + Cash, verify sheet), Pending (transfer/lend decisions, holding/loan
+  suggestions, SMS, uncategorized), category editor (links), account pages
+  (Profile, Preferences, Bank statement), DB v5. Briefs:
+  `.github/design/home-screen.md`, `.github/design/wallet.md`. Not yet brought
+  in line with the UI rules: `ResolveMessageScreen` (its text fields also lack
   `adjustResize`; see the `edge-to-edge` skill).
+- **Round 2 (next): other bank accounts.** Savings becomes an account so Net
+  keeps money moved there. **Round 3: Business profile** — a separate database
+  file and Sheet per profile, switched from the profile icon; never mixed rows.
 - Known defects and cross-module inconsistencies are tracked separately; ask
   before assuming any of them have been fixed.

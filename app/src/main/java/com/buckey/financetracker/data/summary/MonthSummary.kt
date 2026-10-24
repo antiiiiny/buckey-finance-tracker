@@ -1,7 +1,7 @@
 package com.buckey.financetracker.data.summary
 
+import com.buckey.financetracker.data.category.Categories
 import com.buckey.financetracker.data.db.entities.TransactionEntity
-import com.buckey.financetracker.data.db.entities.TransactionType
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
@@ -18,54 +18,36 @@ data class TransactionGroup<K>(
 )
 
 /**
- * Month and day arithmetic for the home screen. Pure functions over rows, so
- * the rules below are unit tested without a database.
+ * Month and day arithmetic for the home screen. Spent and Net per row come from
+ * the [Ledger] (user's rules, 2026-10-24/25); this sums them over a month, a
+ * day or a list. Every function takes the ledger computed over *all* rows,
+ * since a loan or holding row's effect depends on rows outside the list shown;
+ * the overloads without one compute it from the rows given, for tests.
  */
 object MonthSummary {
 
-    /** Debits in these categories move money without spending it. */
-    val TRANSFER_CATEGORIES: Set<String> = setOf("Transfer", "Self Transfer")
-
     /**
-     * Credits in this category are someone paying the user back, so they reduce
-     * spending. Self Transfer credits are the user's own money and don't.
-     */
-    const val REPAYMENT_CATEGORY = "Transfer"
-
-    private const val UNCATEGORIZED = "Uncategorized"
-
-    /**
-     * A debit not categorized as a transfer. An uncategorized debit counts,
-     * since it is most likely spending.
-     */
-    fun isSpending(tx: TransactionEntity): Boolean =
-        tx.type == TransactionType.DEBIT && tx.category !in TRANSFER_CATEGORIES
-
-    /** A credit that pays the user back for something ([REPAYMENT_CATEGORY]). */
-    fun isRepayment(tx: TransactionEntity): Boolean =
-        tx.type == TransactionType.CREDIT && tx.category == REPAYMENT_CATEGORY
-
-    /**
-     * What the rows spent, per [mode] (user's definitions, 2026-10-24):
+     * What [rows] spent, per [mode]:
      *
-     * - [SpentMode.AFTER_TRANSFERS]: [isSpending] debits minus [isRepayment]
-     *   credits. A Transfer debit is usually handing someone money for cash, a
-     *   Transfer credit is a friend paying back something the user paid for;
-     *   neither changes what the user actually spent. Can go negative when
-     *   repayments outrun spending.
-     * - [SpentMode.TOTAL]: every debit.
+     * - [SpentMode.AFTER_TRANSFERS]: spending debits and cash payments, minus
+     *   Transfer credits (friends paying back), plus anything paid beyond a
+     *   holding when clearing it. Transfer, Savings, ATM, Lend and Holding
+     *   debits move money without spending it. Can go negative when repayments
+     *   outrun spending.
+     * - [SpentMode.TOTAL]: every bank debit except those paid out of a holding.
      */
-    fun spentPaise(rows: List<TransactionEntity>, mode: SpentMode): Long = when (mode) {
-        SpentMode.AFTER_TRANSFERS ->
-            rows.filter(::isSpending).sumOf { toPaise(it.amount) } -
-                rows.filter(::isRepayment).sumOf { toPaise(it.amount) }
-        SpentMode.TOTAL ->
-            rows.filter { it.type == TransactionType.DEBIT }.sumOf { toPaise(it.amount) }
+    fun spentPaise(
+        rows: List<TransactionEntity>,
+        mode: SpentMode,
+        ledger: LedgerResult = Ledger.compute(rows)
+    ): Long = rows.sumOf {
+        val effect = ledger.effect(it)
+        if (mode == SpentMode.TOTAL) effect.totalSpent else effect.spent
     }
 
     /** No category decision yet; what "to categorize" counts. */
     fun isUncategorized(tx: TransactionEntity): Boolean =
-        tx.category == null || tx.category == UNCATEGORIZED
+        tx.category == null || tx.category == Categories.UNCATEGORIZED
 
     fun monthOf(tx: TransactionEntity, zone: ZoneId): YearMonth =
         YearMonth.from(Instant.ofEpochMilli(tx.date).atZone(zone))
@@ -73,20 +55,18 @@ object MonthSummary {
     fun dayOf(tx: TransactionEntity, zone: ZoneId): LocalDate =
         Instant.ofEpochMilli(tx.date).atZone(zone).toLocalDate()
 
-    /**
-     * Spent: [spentPaise] over [month]. Net: every credit minus every debit in
-     * [month], transfers included, so it is the month's change in balance.
-     */
+    /** Spent: [spentPaise] over [month]. Net: the month's change in Net. */
     fun totals(
         transactions: List<TransactionEntity>,
         month: YearMonth,
         zone: ZoneId,
-        spentMode: SpentMode = SpentMode.AFTER_TRANSFERS
+        spentMode: SpentMode = SpentMode.AFTER_TRANSFERS,
+        ledger: LedgerResult = Ledger.compute(transactions)
     ): MonthTotals {
         val inMonth = transactions.filter { monthOf(it, zone) == month }
         return MonthTotals(
-            spentPaise = spentPaise(inMonth, spentMode),
-            netPaise = inMonth.sumOf { it.signedPaise() }
+            spentPaise = spentPaise(inMonth, spentMode, ledger),
+            netPaise = inMonth.sumOf { ledger.effect(it).net }
         )
     }
 
@@ -98,22 +78,25 @@ object MonthSummary {
     fun byDay(
         transactions: List<TransactionEntity>,
         zone: ZoneId,
-        spentMode: SpentMode = SpentMode.AFTER_TRANSFERS
-    ): List<TransactionGroup<LocalDate>> = group(transactions, spentMode) { dayOf(it, zone) }
+        spentMode: SpentMode = SpentMode.AFTER_TRANSFERS,
+        ledger: LedgerResult = Ledger.compute(transactions)
+    ): List<TransactionGroup<LocalDate>> = group(transactions, spentMode, ledger) { dayOf(it, zone) }
 
     /** Groups by calendar month, keeping the rows' order. */
     fun byMonth(
         transactions: List<TransactionEntity>,
         zone: ZoneId,
-        spentMode: SpentMode = SpentMode.AFTER_TRANSFERS
-    ): List<TransactionGroup<YearMonth>> = group(transactions, spentMode) { monthOf(it, zone) }
+        spentMode: SpentMode = SpentMode.AFTER_TRANSFERS,
+        ledger: LedgerResult = Ledger.compute(transactions)
+    ): List<TransactionGroup<YearMonth>> = group(transactions, spentMode, ledger) { monthOf(it, zone) }
 
     private fun <K> group(
         transactions: List<TransactionEntity>,
         spentMode: SpentMode,
+        ledger: LedgerResult,
         keyOf: (TransactionEntity) -> K
     ): List<TransactionGroup<K>> =
         transactions.groupBy(keyOf).map { (key, rows) ->
-            TransactionGroup(key, spentPaise(rows, spentMode), rows)
+            TransactionGroup(key, spentPaise(rows, spentMode, ledger), rows)
         }
 }

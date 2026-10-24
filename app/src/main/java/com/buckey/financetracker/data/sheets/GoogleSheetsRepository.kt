@@ -11,6 +11,9 @@ import com.google.api.services.sheets.v4.model.AddSheetRequest
 import com.google.api.services.sheets.v4.model.BatchUpdateSpreadsheetRequest
 import com.google.api.services.sheets.v4.model.BatchUpdateValuesRequest
 import com.google.api.services.sheets.v4.model.ClearValuesRequest
+import com.google.api.services.sheets.v4.model.DeleteDimensionRequest
+import com.google.api.services.sheets.v4.model.DeleteSheetRequest
+import com.google.api.services.sheets.v4.model.DimensionRange
 import com.google.api.services.sheets.v4.model.DuplicateSheetRequest
 import com.google.api.services.sheets.v4.model.GridRange
 import com.google.api.services.sheets.v4.model.Request
@@ -30,7 +33,9 @@ import java.util.Locale
  * Rows are written once, keyed by transactionId hash for dedup, and kept in date
  * order (rule 10, amended 2026-10-24). In-place writes are limited to a synced
  * row's H:J cells ([updateCells]; see SheetCategorySync), re-sorting by date
- * ([sortByDate]), and the explicit full [rebuild].
+ * ([sortByDate]), and the explicit full [rebuild]. Since 2026-10-25 a row the user
+ * marks as a holding is deleted from Transactions ([deleteRows]) and the
+ * Holdings tab is written whole from Room ([writeHoldings]) — rule 10 as amended.
  * Scoped to the single spreadsheet identified by [BuildConfig.GOOGLE_SHEET_ID].
  */
 class GoogleSheetsRepository(private val context: Context) {
@@ -77,11 +82,106 @@ class GoogleSheetsRepository(private val context: Context) {
         }
     }
 
-    /** The numeric ID of the "Transactions" tab, or null if it doesn't exist. */
-    private fun tabId(service: Sheets): Int? =
+    /** The numeric ID of the [title] tab ("Transactions" by default), or null if missing. */
+    private fun tabId(service: Sheets, title: String = SHEET_NAME): Int? =
         service.spreadsheets().get(sheetId).execute().sheets
-            ?.firstOrNull { it.properties?.title == SHEET_NAME }
+            ?.firstOrNull { it.properties?.title == title }
             ?.properties?.sheetId
+
+    /**
+     * Deletes Transactions rows by 1-based row number, bottom first so earlier
+     * deletions don't shift later ones. For rows that became holdings.
+     */
+    suspend fun deleteRows(rowNumbers: List<Int>): Boolean = withContext(Dispatchers.IO) {
+        val service = sheetsService ?: return@withContext false
+        if (rowNumbers.isEmpty()) return@withContext true
+        try {
+            val tab = tabId(service) ?: return@withContext false
+            val requests = rowNumbers.filter { it > 1 }.distinct().sortedDescending().map { row ->
+                Request().setDeleteDimension(
+                    DeleteDimensionRequest().setRange(
+                        DimensionRange().setSheetId(tab).setDimension("ROWS")
+                            .setStartIndex(row - 1).setEndIndex(row)
+                    )
+                )
+            }
+            if (requests.isNotEmpty()) {
+                service.spreadsheets()
+                    .batchUpdate(sheetId, BatchUpdateSpreadsheetRequest().setRequests(requests))
+                    .execute()
+            }
+            Log.i(TAG, "Deleted ${requests.size} holding row(s) from '$SHEET_NAME'")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error deleting rows: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Creates the Dashboard tab (user, 2026-10-25): formulas over Transactions,
+     * dropdowns and charts, as the first tab. An existing Dashboard tab is
+     * replaced. Called once per layout version; a sync never writes it otherwise.
+     */
+    suspend fun createDashboard(layoutCells: List<Pair<String, String>>): Boolean = withContext(Dispatchers.IO) {
+        val service = sheetsService ?: return@withContext false
+        val tabName = DashboardSheetFormat.SHEET_NAME
+        try {
+            val existing = tabId(service, tabName)
+            run {
+                val requests = mutableListOf<Request>()
+                existing?.let { requests += Request().setDeleteSheet(DeleteSheetRequest().setSheetId(it)) }
+                requests += Request().setAddSheet(
+                    AddSheetRequest().setProperties(SheetProperties().setTitle(tabName).setIndex(0))
+                )
+                val reply = service.spreadsheets()
+                    .batchUpdate(sheetId, BatchUpdateSpreadsheetRequest().setRequests(requests))
+                    .execute()
+                val tab = reply.replies.last().addSheet.properties.sheetId
+                service.spreadsheets().values().batchUpdate(
+                    sheetId,
+                    BatchUpdateValuesRequest().setValueInputOption("USER_ENTERED").setData(
+                        layoutCells.map { (a1, value) -> ValueRange().setRange("$tabName!$a1").setValues(listOf(listOf(value))) }
+                    )
+                ).execute()
+                service.spreadsheets()
+                    .batchUpdate(sheetId, BatchUpdateSpreadsheetRequest().setRequests(DashboardSheetRequests.build(tab)))
+                    .execute()
+                Log.i(TAG, "Built the '$tabName' tab")
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing dashboard: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Replaces the Holdings tab's contents with [rows] under its headers,
+     * creating the tab if needed. The caller writes only when the rows changed.
+     */
+    suspend fun writeHoldings(rows: List<List<String>>): Boolean = withContext(Dispatchers.IO) {
+        val service = sheetsService ?: return@withContext false
+        val tabName = HoldingsSheetFormat.SHEET_NAME
+        try {
+            if (tabId(service, tabName) == null) {
+                val add = Request().setAddSheet(AddSheetRequest().setProperties(SheetProperties().setTitle(tabName)))
+                service.spreadsheets()
+                    .batchUpdate(sheetId, BatchUpdateSpreadsheetRequest().setRequests(listOf(add)))
+                    .execute()
+            }
+            service.spreadsheets().values().clear(sheetId, "$tabName!A:Z", ClearValuesRequest()).execute()
+            service.spreadsheets().values()
+                .update(sheetId, "$tabName!A1", ValueRange().setValues(listOf(HoldingsSheetFormat.HEADERS) + rows))
+                .setValueInputOption("USER_ENTERED")
+                .execute()
+            Log.i(TAG, "Wrote ${rows.size} row(s) to '$tabName'")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing holdings: ${e.message}")
+            false
+        }
+    }
 
     /**
      * Checks if a transaction with [transactionId] already exists in the sheet.

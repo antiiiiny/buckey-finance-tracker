@@ -10,6 +10,7 @@ import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
 import com.buckey.financetracker.data.parser.banks.SibParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.time.Instant
 
 /**
  * One-time query against the device's SMS inbox for historical messages
@@ -120,7 +121,7 @@ object SmsBackfill {
         val failures = mutableListOf<UnparsedMessageEntity>()
 
         for (msg in messages) {
-            val parsed = SibParser.parse(msg.senderAddress, msg.rawBody)
+            val parsed = SibParser.parse(msg.senderAddress, msg.rawBody, Instant.ofEpochMilli(msg.receivedAt))
             if (parsed == null) {
                 failures.add(msg.copy(failureReason = "No parser matched this SMS format"))
                 continue
@@ -138,7 +139,8 @@ object SmsBackfill {
                     rawRef = parsed.rawRef,
                     senderAddress = msg.senderAddress,
                     rawBody = msg.rawBody,
-                    category = CategoryMatcher.getCategory(database, parsed.merchant, parsed.type)
+                    category = parsed.categoryHint
+                        ?: CategoryMatcher.getCategory(database, parsed.merchant, parsed.type)
                 )
             )
         }

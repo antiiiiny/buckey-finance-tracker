@@ -1,63 +1,73 @@
 # Handoff
-Last updated: 2026-10-24 · branch `main` · UI redesign committed on top of
-`ce25a0d` (`git log -3` shows the hash; not pushed)
+Last updated: 2026-10-25 · branch `main` · wallet round committed on top of
+`b28b080` (`git log -3` shows the hash) · **not pushed**
 
 New here? Load the `handoff` skill and read in its order: this file, then
 CLAUDE.md, COPILOT-INSTRUCTIONS.MD, STAGES.md.
 
 ## State in one paragraph
-Stages 0–7 are done and verified on the user's Pixel 9a. This session added UI
-tooling and rules, then redesigned the UI from an approved brief
-(`.github/design/home-screen.md`): Home (Spent + running balance with an
-SMS-verified check), Pending tab, Sync and "Open in Google Sheets" in Settings,
-Buckey's own palette and type scale. It builds and all tests pass; it has
-**not** been run on the device yet.
+Stages 0–7 are done and were verified on the user's Pixel 9a (2026-10-24). Since
+then, two rounds were built and unit-tested but **never run on the device**:
+a UI redesign (`b28b080`: Home, Pending, theme, UI rules + intake rule, design
+skills) and "track all my money" round 1 (wallet, lending, savings, holdings,
+profile pages, DB v5, Holdings + Dashboard tabs). The v5 migration is unproven
+on real data, and `fallbackToDestructiveMigration()` is still set.
 
 ## Done this session (verified how)
-- Skills copied in by hand (no installer run), byte-identical to upstream:
-  `.claude/skills/frontend-design/` (Anthropic) and `.claude/skills/edge-to-edge/`
-  (Google android/skills). No official phone Compose/M3 design skill exists; the
-  Android CLI is not installed and isn't needed.
-- CLAUDE.md: "UI rules" and "UI intake — interview before any UI code".
-- Intake interview → brief → user's mockups → build. Second round of user
-  feedback built: "Buckey" label on Home, Pending restyled like Home, Open in
-  Google Sheets, Spent shows (debits minus transfers and repayments / total), ⋮
-  lists both groupings with a tick.
-- Balance logic checked against a copy of the device DB (deleted afterwards):
-  268/268 SMS rows carry a parseable balance; earliest SMS balance + every later
-  row = latest SMS balance, difference ₹0.00.
-- Tests: 102 Kotlin (was 76), 73 Python, all green via `cli-build-test`. Scan:
-  no literal colors/sp/dp/font weights in the new UI.
+- UI tooling: `frontend-design` and `edge-to-edge` skills copied in unchanged;
+  CLAUDE.md "UI rules" + "UI intake" sections. Redesign brief:
+  `.github/design/home-screen.md`.
+- Wallet round, design `.github/design/wallet.md` (money table, decisions):
+  `data/summary/Ledger` model; `data/wallet/` (CashBook, Links, suggestions);
+  ATM SMS parser from the user's sample; Room v5 (`MIGRATION_4_5`); Pending
+  decisions (Cash/Lend) and Clear suggestions (±₹10, adjustable); category
+  editor links; account pages from the profile initial (Profile, Preferences,
+  Bank statement); Settings tab removed; rule 10 amended (d)(e)(f).
+- Sheets: cash rows → Transactions (Source `cash`); holding rows leave
+  Transactions for a Holdings tab; the app creates a formula **Dashboard** tab
+  once per layout version (month + "Spent shows" dropdowns, category pie, two
+  monthly charts). Sync otherwise writes only Transactions (+ Holdings on change).
+  The desktop `sheet_dashboard.py` was retired.
+- Editor save → back to Home with a short popup ("Saved category as Food").
+- Balance logic checked against a copy of the device DB (deleted after): earliest
+  SMS balance + every later row = latest SMS balance, ₹0.00 off.
+- Tests: 133 Kotlin, 75 Python, all green (`cli-build-test`). UI scan clean.
 
 ## In flight / not verified
-- **On-device check of the redesign.** Use the `device-verify` skill: tabs,
-  Home in light/dark, Buckey label, month picker, ⋮ ticks, "N to categorize"
-  filter, Verify balance (expect "Matches"), Settings → Net shows / Spent shows /
-  Open in Google Sheets, Pending layout, sync banner.
+- **Everything since 2026-10-24 on the device.** Use `device-verify`:
+  1. Install from Android Studio over the current app; confirm ~590 rows survive
+     the v5 migration and former debit "Self Transfer" rows read "Savings".
+  2. Home: tap the line under Net → "Your money" → Start wallet at ₹168.
+  3. Mark the ₹5,000 credit from the person in memory (category-conventions) as
+     Holding. Net unchanged, Holding −₹5,000; after a sync the row leaves
+     Transactions and a Holdings tab appears.
+  4. Sync: Dashboard tab rebuilt by the app (pie, both dropdowns, no #ERROR!).
+  5. Verify balance sheet still says "Matches".
 
 ## Next steps (ordered)
-1. User verifies on device; fix what they find.
-2. Bring `CategoryEditorScreen` and `ResolveMessageScreen` in line with the UI
-   rules (via the intake interview), incl. `adjustResize` for their text fields.
-3. The user's "later" list: PDF statement in the app, autopay, more SIB formats.
+1. Device verification above; fix what it finds.
+2. Bring `ResolveMessageScreen` in line with the UI rules (+ `adjustResize`).
+3. Round 2: other bank accounts (Savings becomes an account so Net keeps it).
+4. Round 3: Business profile — separate DB file + Sheet per profile, "like an
+   app clone", switched from the profile icon.
+5. Later list: PDF statement in the app, autopay, more SIB formats.
 
 ## User decisions and preferences to respect
-- UI: clean and minimal; intake interview before any UI code; Buckey's own
-  palette (not Material You); credits "+₹" in green; neutral category circles.
-- Net = running balance by default. Spent = debits minus Transfer debits minus
-  Transfer credits by default; both "Transfer" directions stay "Transfer".
-- Credits are only Income or Transfer. Income = one named person (see memory);
-  a similarly named other person is Transfer. Keep real names out of the repo
-  (the mockup image is not committed for that reason).
-- Never open statement PDFs; never pass `--apply`, `--force` or
-  `--allow-fuzzy-merchant` yourself.
-- Don't touch the Gradle wrapper or dependencies (Compose BOM stays 2024.10.01).
-- `.claude/settings.json` WebFetch allow rules stay (user, 2026-10-24).
+- Money rules: `.github/design/wallet.md`. Suggestions are never automatic; a
+  Transfer credit only clears a loan when the user links it.
+- Spent (default) = debits minus Transfer/Savings/ATM/Lend/Holding debits minus
+  Transfer credits; Net = bank + wallet + lent − holding.
+- UI: clean and minimal; run the intake interview before UI code unless the user
+  specifies the change fully; own palette; profile initial top right of Home.
+- Sync writes Transactions only (plus Holdings on change); the Dashboard is
+  formulas, created once — don't make sync write it again.
+- Keep real names out of the repo. Never open statement PDFs; never pass
+  `--apply`, `--force` or `--allow-fuzzy-merchant` to the statement script.
+- Don't touch the Gradle wrapper or dependencies (Compose BOM 2024.10.01).
 - Commit only when asked; push/merge only when asked. User's terminal is PowerShell.
 
 ## Watch out for
-- `WindowInsetsRulers` / `fitInside` from the edge-to-edge skill don't exist in
-  this Compose BOM; use `imePadding()` and Scaffold padding.
-- 7 transactions are still Uncategorized (they now show in Pending).
-- `fallbackToDestructiveMigration()` is still set: every DB version bump needs a
-  real migration. The redesign added no schema change.
+- `fallbackToDestructiveMigration()`: if v5 fails to migrate, the data is wiped.
+  Check step 1 above before anything else; the Sheet is the backup.
+- `WindowInsetsRulers` / `fitInside` don't exist in this Compose BOM.
+- The Dashboard can't see holdings or SMS balances; its Net is the month's change.

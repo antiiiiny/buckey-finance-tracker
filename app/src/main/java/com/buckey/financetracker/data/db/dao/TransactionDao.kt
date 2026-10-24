@@ -32,10 +32,14 @@ interface TransactionDao {
     // rewrites the Sheet's Category cells for rows already in it (rule 10), and
     // records who made the change in `categorized_by`.
 
-    /** One row, by the user or by an import's fill pass ([by]). */
+    /**
+     * One row, by the user or by an import's fill pass ([by]). Clears any loan
+     * or holding link: a plain category means the row is ordinary again.
+     */
     @Query(
         "UPDATE transactions SET category = :category, categorized_by = :by, " +
-            "category_dirty = 1 WHERE id = :id"
+            "category_dirty = 1, link_kind = NULL, link_group = NULL, counterparty = NULL, " +
+            "link_amount = NULL WHERE id = :id"
     )
     suspend fun updateCategory(id: Long, category: String, by: String)
 
@@ -47,14 +51,15 @@ interface TransactionDao {
     // alone, and so is a row already holding the target category, so a re-import
     // relabels only what actually changes and "auto" keeps meaning "the rule got
     // it right on arrival". Without it (the user's own bulk edit), every row is
-    // set and marked as the user's.
+    // set and marked as the user's. Rows linked to a loan or holding are never
+    // touched by a bulk write; only the user's own edit of that row unlinks it.
 
     /** Sets the category of the row(s) with this reference; for import overrides. */
     @Query(
         "UPDATE transactions SET category = CASE WHEN type = 'CREDIT' AND :category " +
             "NOT IN (:creditCategories) THEN :creditFallback ELSE :category END, " +
             "categorized_by = :by, category_dirty = 1 WHERE raw_ref = :rawRef " +
-            "AND (:protectManual = 0 OR (categorized_by <> 'manual' AND category IS NOT " +
+            "AND link_kind IS NULL AND (:protectManual = 0 OR (categorized_by <> 'manual' AND category IS NOT " +
             "CASE WHEN type = 'CREDIT' AND :category NOT IN (:creditCategories) " +
             "THEN :creditFallback ELSE :category END))"
     )
@@ -72,7 +77,7 @@ interface TransactionDao {
         "UPDATE transactions SET category = CASE WHEN type = 'CREDIT' AND :category " +
             "NOT IN (:creditCategories) THEN :creditFallback ELSE :category END, " +
             "categorized_by = :by, category_dirty = 1 WHERE id IN (:ids) " +
-            "AND (:protectManual = 0 OR (categorized_by <> 'manual' AND category IS NOT " +
+            "AND link_kind IS NULL AND (:protectManual = 0 OR (categorized_by <> 'manual' AND category IS NOT " +
             "CASE WHEN type = 'CREDIT' AND :category NOT IN (:creditCategories) " +
             "THEN :creditFallback ELSE :category END))"
     )
@@ -97,6 +102,13 @@ interface TransactionDao {
             "WHERE type = 'CREDIT' AND (category IS NULL OR category NOT IN (:creditCategories))"
     )
     suspend fun normalizeCreditCategories(creditCategories: List<String>, creditFallback: String): Int
+
+    /** Renames a category on debits only; idempotent. Returns rows changed. */
+    @Query(
+        "UPDATE transactions SET category = :to, category_dirty = 1 " +
+            "WHERE type = 'DEBIT' AND category = :from"
+    )
+    suspend fun renameDebitCategory(from: String, to: String): Int
 
     /**
      * Rows whose merchant contains [pattern], dated at or after [sinceMillis].
@@ -145,8 +157,46 @@ interface TransactionDao {
     @Query("UPDATE transactions SET synced_to_sheets = 1 WHERE id = :id")
     suspend fun markAsSynced(id: Long)
 
-    @Query("SELECT * FROM transactions WHERE synced_to_sheets = 0 ORDER BY date DESC")
+    /** Rows the Transactions tab still needs; holding rows go to the Holdings tab. */
+    @Query(
+        "SELECT * FROM transactions WHERE synced_to_sheets = 0 " +
+            "AND (link_kind IS NULL OR link_kind NOT IN ('HOLD_IN', 'HOLD_OUT', 'HOLD_CLEAR')) " +
+            "ORDER BY date DESC"
+    )
     suspend fun getUnsyncedTransactions(): List<TransactionEntity>
+
+    /** Rows that became holdings after reaching the Transactions tab; to remove. */
+    @Query(
+        "SELECT * FROM transactions WHERE synced_to_sheets = 1 " +
+            "AND link_kind IN ('HOLD_IN', 'HOLD_OUT', 'HOLD_CLEAR')"
+    )
+    suspend fun getSyncedHoldingRows(): List<TransactionEntity>
+
+    /** After their Sheet rows were deleted: not in the Transactions tab any more. */
+    @Query("UPDATE transactions SET synced_to_sheets = 0, category_dirty = 0 WHERE id IN (:ids)")
+    suspend fun markRemovedFromSheet(ids: List<Long>)
+
+    /**
+     * Sets a row's loan / holding / wallet link (data/wallet/Links). The user's
+     * choice, so it is marked manual, and dirty so the Sheet follows.
+     */
+    @Query(
+        "UPDATE transactions SET category = :category, link_kind = :linkKind, " +
+            "link_group = :linkGroup, counterparty = :counterparty, link_amount = :linkAmount, " +
+            "categorized_by = 'manual', category_dirty = 1 WHERE id = :id"
+    )
+    suspend fun updateLink(
+        id: Long,
+        category: String,
+        linkKind: String?,
+        linkGroup: String?,
+        counterparty: String?,
+        linkAmount: Double?
+    )
+
+    /** Rows in a loan or holding, oldest first. */
+    @Query("SELECT * FROM transactions WHERE link_group = :group ORDER BY date ASC, id ASC")
+    suspend fun getByLinkGroup(group: String): List<TransactionEntity>
 
     /** Every row in Sheet order (oldest first), for a full Sheet rebuild. */
     @Query("SELECT * FROM transactions ORDER BY date ASC, id ASC")

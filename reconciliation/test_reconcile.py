@@ -721,5 +721,23 @@ class EncryptedStatement(unittest.TestCase):
         self.assertEqual(len(rows), 10)
         self.assertEqual(validate_balances(rows), [])
 
+
+class CashRowsSkipped(unittest.TestCase):
+    """The statement never contains the wallet, so cash rows are not matched."""
+
+    def test_cash_rows_are_skipped(self):
+        header = ["Transaction ID", "Amount", "Date", "Merchant", "Type",
+                  "Account Last4", "Raw Ref", "Category", "Source"]
+        bank = ["h1", 100, 46000.5, "UPI", "DEBIT", "6825", "620896250123", "Food", "sms"]
+        cash = ["h2", 20, 46000.6, "Chai", "DEBIT", "cash", "", "Food", "cash"]
+        rows = sheets.rows_from_values([header, bank, cash])
+        self.assertEqual([r.transaction_id for r in rows], ["h1"])
+
+    def test_rows_without_a_source_column_still_load(self):
+        header = ["Transaction ID", "Amount", "Date", "Merchant", "Type", "Account Last4", "Raw Ref", "Category"]
+        old = ["h1", 100, 46000.5, "UPI", "DEBIT", "6825", "620896250123", "Food"]
+        self.assertEqual(len(sheets.rows_from_values([header, old])), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

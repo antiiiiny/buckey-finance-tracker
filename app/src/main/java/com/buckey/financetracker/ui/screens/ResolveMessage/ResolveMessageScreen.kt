@@ -46,7 +46,7 @@ import com.buckey.financetracker.data.db.AppDatabase
 import com.buckey.financetracker.data.db.entities.TransactionType
 import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
 import com.buckey.financetracker.data.review.UnparsedResolver
-import com.buckey.financetracker.ui.screens.CategoryEditor.PRESET_CATEGORIES
+import com.buckey.financetracker.data.category.Categories
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -173,7 +173,7 @@ fun ResolveMessageScreen(
                     expanded = categoryExpanded,
                     onDismissRequest = { categoryExpanded = false }
                 ) {
-                    (listOf(AUTO_CATEGORY) + PRESET_CATEGORIES).forEach { option ->
+                    (listOf(AUTO_CATEGORY) + (Categories.DEBIT_PRESETS + Categories.CREDIT_PRESETS).distinct()).forEach { option ->
                         DropdownMenuItem(
                             text = { Text(option) },
                             onClick = {

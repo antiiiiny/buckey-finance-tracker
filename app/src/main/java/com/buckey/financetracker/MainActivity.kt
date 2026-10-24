@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -31,11 +30,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,7 +59,13 @@ import com.buckey.financetracker.ui.screens.CategoryEditor.CategoryEditorScreen
 import com.buckey.financetracker.ui.screens.Home.HomeScreen
 import com.buckey.financetracker.ui.screens.Pending.PendingScreen
 import com.buckey.financetracker.ui.screens.ResolveMessage.ResolveMessageScreen
-import com.buckey.financetracker.ui.screens.Settings.SettingsScreen
+import com.buckey.financetracker.ui.screens.Account.AccountPage
+import com.buckey.financetracker.ui.screens.Account.AccountScreen
+import com.buckey.financetracker.ui.screens.Account.PreferencesScreen
+import com.buckey.financetracker.ui.screens.Account.ProfileScreen
+import com.buckey.financetracker.ui.screens.Account.StatementScreen
+import com.buckey.financetracker.data.summary.Ledger
+import com.buckey.financetracker.data.summary.MonthSummary
 import com.buckey.financetracker.ui.theme.FinanceTrackerTheme
 import com.buckey.financetracker.ui.theme.Spacing
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -70,10 +78,14 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "MainActivity"
         private const val RC_SIGN_IN = 9001
 
-        // The three tabs (redesign, 2026-10-24). Sync status lives in Settings.
+        // Two tabs; the profile initial on Home opens the account pages
+        // (2026-10-25), which replaced the Settings tab.
         private const val ROUTE_HOME = "home"
         private const val ROUTE_PENDING = "pending"
-        private const val ROUTE_SETTINGS = "settings"
+        private const val ROUTE_ACCOUNT = "account"
+        private const val ROUTE_PROFILE = "account/profile"
+        private const val ROUTE_PREFERENCES = "account/preferences"
+        private const val ROUTE_STATEMENT = "account/statement"
     }
 
     private var smsPermissionGranted by mutableStateOf(false)
@@ -151,15 +163,28 @@ class MainActivity : ComponentActivity() {
                         )
                     } else {
                         val navController = rememberNavController()
+                        // One popup host for the whole app: the editor hands its
+                        // result to Home, Pending shows its own (user, 2026-10-25).
+                        val snackbar = remember { SnackbarHostState() }
+                        val popupScope = rememberCoroutineScope()
+                        fun popup(message: String) {
+                            popupScope.launch { snackbar.showSnackbar(message, duration = SnackbarDuration.Short) }
+                        }
                         val backStackEntry by navController.currentBackStackEntryAsState()
                         val currentRoute = backStackEntry?.destination?.route
                         val unresolvedMessages by database.unparsedMessageDao()
                             .getUnresolvedMessages()
                             .collectAsStateWithLifecycle(initialValue = emptyList())
-                        val uncategorized by database.transactionDao()
-                            .observeUncategorized()
+                        val rows by database.transactionDao()
+                            .getAllTransactions()
                             .collectAsStateWithLifecycle(initialValue = emptyList())
-                        val pendingCount = unresolvedMessages.size + uncategorized.size
+                        // Same "to sort out" count as the Pending screen.
+                        val pendingCount = remember(rows, unresolvedMessages) {
+                            val walletStart = Ledger.compute(rows).walletStart
+                            unresolvedMessages.size + rows.count {
+                                MonthSummary.isUncategorized(it) || Ledger.needsTransferDecision(it, walletStart)
+                            }
+                        }
 
                         // Tabs pop back to Home, so Back from any tab lands there.
                         fun openTab(route: String) {
@@ -194,12 +219,6 @@ class MainActivity : ComponentActivity() {
                                         },
                                         label = { Text("Pending") }
                                     )
-                                    NavigationBarItem(
-                                        selected = currentRoute == ROUTE_SETTINGS,
-                                        onClick = { openTab(ROUTE_SETTINGS) },
-                                        icon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
-                                        label = { Text("Settings") }
-                                    )
                                 }
                             }
                         ) { padding ->
@@ -215,16 +234,19 @@ class MainActivity : ComponentActivity() {
                                 composable(ROUTE_HOME) {
                                     HomeScreen(
                                         database = database,
+                                        snackbar = snackbar,
                                         isSignedIn = isSignedIn,
                                         onTransactionTap = { txId ->
                                             navController.navigate("category_editor/$txId")
                                         },
-                                        onOpenSettings = { openTab(ROUTE_SETTINGS) }
+                                        onOpenAccount = { navController.navigate(ROUTE_ACCOUNT) },
+                                        onOpenProfile = { navController.navigate(ROUTE_PROFILE) }
                                     )
                                 }
                                 composable(ROUTE_PENDING) {
                                     PendingScreen(
                                         database = database,
+                                        snackbar = snackbar,
                                         onMessageTap = { messageId ->
                                             navController.navigate("resolve_message/$messageId")
                                         },
@@ -246,13 +268,34 @@ class MainActivity : ComponentActivity() {
                                         onDone = { navController.popBackStack() }
                                     )
                                 }
-                                composable(ROUTE_SETTINGS) {
-                                    SettingsScreen(
+                                composable(ROUTE_ACCOUNT) {
+                                    AccountScreen(
+                                        onOpen = { page ->
+                                            navController.navigate(
+                                                when (page) {
+                                                    AccountPage.PROFILE -> ROUTE_PROFILE
+                                                    AccountPage.PREFERENCES -> ROUTE_PREFERENCES
+                                                    AccountPage.STATEMENT -> ROUTE_STATEMENT
+                                                }
+                                            )
+                                        },
+                                        onBack = { navController.popBackStack() }
+                                    )
+                                }
+                                composable(ROUTE_PROFILE) {
+                                    ProfileScreen(
                                         database = database,
                                         isSignedIn = isSignedIn,
                                         onSignIn = { launchGoogleSignIn() },
-                                        onSignOut = { signOut() }
+                                        onSignOut = { signOut() },
+                                        onBack = { navController.popBackStack() }
                                     )
+                                }
+                                composable(ROUTE_PREFERENCES) {
+                                    PreferencesScreen(onBack = { navController.popBackStack() })
+                                }
+                                composable(ROUTE_STATEMENT) {
+                                    StatementScreen(database = database, onBack = { navController.popBackStack() })
                                 }
                                 composable(
                                     route = "category_editor/{transactionId}",
@@ -264,7 +307,15 @@ class MainActivity : ComponentActivity() {
                                     CategoryEditorScreen(
                                         database = database,
                                         transactionId = txId,
-                                        onBack = { navController.popBackStack() }
+                                        onBack = { navController.popBackStack() },
+                                        // Saved: back to Home with a short popup saying what changed.
+                                        onDone = { message ->
+                                            navController.navigate(ROUTE_HOME) {
+                                                popUpTo(ROUTE_HOME) { inclusive = true }
+                                                launchSingleTop = true
+                                            }
+                                            popup(message)
+                                        }
                                     )
                                 }
                             }

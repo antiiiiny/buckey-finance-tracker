@@ -13,6 +13,10 @@ import androidx.work.WorkerParameters
 import androidx.work.Constraints
 import com.buckey.financetracker.FinanceTrackerApp
 import com.buckey.financetracker.data.db.AppDatabase
+import com.buckey.financetracker.data.db.entities.LinkKind
+import com.buckey.financetracker.data.summary.Ledger
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 
 /**
@@ -44,6 +48,12 @@ class SheetsSyncWorker(
          * on the first run after upgrading, and after [requestRebuild].
          */
         private const val PREF_SHEET_REBUILT = "sheet_rebuilt_v4"
+
+        /** Hash of the Holdings tab as last written; it is rewritten only on change. */
+        private const val PREF_HOLDINGS_HASH = "holdings_tab_hash"
+
+        /** The Dashboard layout version last built; the tab is created once per version. */
+        private const val PREF_DASHBOARD_LAYOUT = "dashboard_layout_version"
 
         /** SQLite caps bound variables at 999; stay well under it. */
         private const val ID_CHUNK = 500
@@ -129,6 +139,12 @@ class SheetsSyncWorker(
             // pass. Null means the read failed; fall back to per-row dedup.
             var rowIndex = repository.fetchRowIndex()
 
+            // Rows marked as holdings since they were synced leave Transactions
+            // (rule 10, amended 2026-10-25). Before appends, while rowIndex is fresh.
+            val holdingsRemoved: Boolean? = if (rowIndex == null) true
+            else removeHoldingRows(database, repository, rowIndex)
+            if (holdingsRemoved == null) rowIndex = repository.fetchRowIndex()
+
             val unsynced = database.transactionDao().getUnsyncedTransactions()
             var syncedCount = 0
             var skippedCount = 0
@@ -168,8 +184,12 @@ class SheetsSyncWorker(
                 rowIndex = repository.fetchRowIndex()
             }
             val categoriesOk = rowIndex?.let { syncCategories(database, repository, it) } ?: false
+            val holdingsOk = syncHoldingsTab(database, repository, prefs)
+            val dashboardOk = syncDashboard(repository, prefs)
 
-            if ((failedCount > 0 && syncedCount == 0) || !categoriesOk) {
+            if ((failedCount > 0 && syncedCount == 0) || !categoriesOk || !holdingsOk ||
+                !dashboardOk || holdingsRemoved == false
+            ) {
                 Result.retry()
             } else {
                 Result.success()
@@ -187,10 +207,67 @@ class SheetsSyncWorker(
      */
     private suspend fun rebuild(database: AppDatabase, repository: GoogleSheetsRepository): Boolean {
         val dao = database.transactionDao()
-        val rows = dao.getAllOldestFirst()
+        // Holding rows belong to the Holdings tab, never Transactions (rule 10).
+        val rows = dao.getAllOldestFirst().filter { it.linkKind !in LinkKind.HOLDING }
         if (!repository.rebuild(rows)) return false
         rows.map { it.id }.chunked(ID_CHUNK).forEach { dao.markRebuilt(it) }
         Log.i(TAG, "Sheet rebuilt: ${rows.size} rows, sorted by date")
+        return true
+    }
+
+    /**
+     * Deletes from Transactions the synced rows that are now holdings. Returns
+     * null when rows were deleted (row numbers changed: re-read the index), true
+     * when there was nothing to do, false if the delete failed.
+     */
+    private suspend fun removeHoldingRows(
+        database: AppDatabase,
+        repository: GoogleSheetsRepository,
+        rowIndex: Map<String, Int>
+    ): Boolean? {
+        val dao = database.transactionDao()
+        val rows = dao.getSyncedHoldingRows()
+        if (rows.isEmpty()) return true
+        // A row missing from the Sheet is already gone; clearing its flag is enough.
+        if (!repository.deleteRows(rows.mapNotNull { rowIndex[it.transactionId] })) return false
+        rows.map { it.id }.chunked(ID_CHUNK).forEach { dao.markRemovedFromSheet(it) }
+        Log.i(TAG, "Moved ${rows.size} holding row(s) out of the Transactions tab")
+        return null
+    }
+
+    /**
+     * Writes the Holdings tab from Room when its contents changed since the last
+     * write. Never creates the tab while there are no holdings.
+     */
+    private suspend fun syncHoldingsTab(
+        database: AppDatabase,
+        repository: GoogleSheetsRepository,
+        prefs: android.content.SharedPreferences
+    ): Boolean {
+        val ledger = Ledger.compute(database.transactionDao().getAllOldestFirst())
+        val rows = HoldingsSheetFormat.rows(ledger)
+        val hash = rows.hashCode().toString()
+        val last = prefs.getString(PREF_HOLDINGS_HASH, null)
+        if (hash == last || (rows.isEmpty() && last == null)) return true
+        if (!repository.writeHoldings(rows)) return false
+        prefs.edit().putString(PREF_HOLDINGS_HASH, hash).apply()
+        return true
+    }
+
+    /**
+     * Creates the Dashboard tab once per [DashboardSheetFormat.LAYOUT_VERSION]
+     * (user, 2026-10-25): on the first sync after install, and after an update
+     * that changes its layout. It is formulas over Transactions, so it updates
+     * itself; every other sync makes no Dashboard call at all.
+     */
+    private suspend fun syncDashboard(
+        repository: GoogleSheetsRepository,
+        prefs: android.content.SharedPreferences
+    ): Boolean {
+        if (prefs.getInt(PREF_DASHBOARD_LAYOUT, 0) == DashboardSheetFormat.LAYOUT_VERSION) return true
+        val today = LocalDate.now(ZoneId.systemDefault())
+        if (!repository.createDashboard(DashboardSheetFormat.layoutCells(today))) return false
+        prefs.edit().putInt(PREF_DASHBOARD_LAYOUT, DashboardSheetFormat.LAYOUT_VERSION).apply()
         return true
     }
 

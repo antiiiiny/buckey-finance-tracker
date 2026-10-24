@@ -23,7 +23,7 @@ import kotlinx.coroutines.launch
         UnparsedMessageEntity::class,
         CategoryRuleEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -45,7 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     // Real migrations first. The destructive fallback stays only for
                     // versions with no path, so it must never be the route from v2.
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration()
                     .addCallback(SEED_CALLBACK)
                     .build()
@@ -81,6 +81,26 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE transactions ADD COLUMN categorized_by TEXT NOT NULL DEFAULT 'auto'"
+                )
+            }
+        }
+
+        /**
+         * v5 (wallet and holdings, 2026-10-25) adds the link columns that tie a
+         * row to a loan, a holding or the wallet, and renames debit
+         * "Self Transfer" to "Savings" (credits keep "Self Transfer": money back
+         * from the user's own account). Renamed rows are marked dirty so the
+         * Sheet's Category cell follows.
+         */
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE transactions ADD COLUMN link_kind TEXT")
+                db.execSQL("ALTER TABLE transactions ADD COLUMN link_group TEXT")
+                db.execSQL("ALTER TABLE transactions ADD COLUMN counterparty TEXT")
+                db.execSQL("ALTER TABLE transactions ADD COLUMN link_amount REAL")
+                db.execSQL(
+                    "UPDATE transactions SET category = 'Savings', category_dirty = 1 " +
+                        "WHERE type = 'DEBIT' AND category = 'Self Transfer'"
                 )
             }
         }

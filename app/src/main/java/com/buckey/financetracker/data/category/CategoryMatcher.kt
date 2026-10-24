@@ -18,9 +18,14 @@ object CategoryMatcher {
 
     /**
      * The only categories a credit may carry (user's rule, 2026-10-24): money in
-     * is income or a transfer. Self Transfer counts as a transfer.
+     * is income or a transfer. Self Transfer counts as a transfer. Since
+     * 2026-10-25 also: money held for someone, a loan paid back, and a wallet
+     * recount (cash rows).
      */
-    val CREDIT_CATEGORIES: List<String> = listOf("Income", "Transfer", "Self Transfer")
+    val CREDIT_CATEGORIES: List<String> = listOf(
+        Categories.INCOME, Categories.TRANSFER, Categories.SELF_TRANSFER,
+        Categories.HOLDING, Categories.LOAN_REPAID, Categories.WALLET_ADJUSTMENT
+    )
 
     /**
      * What any other credit becomes, including one with no rule. Income only
@@ -33,8 +38,16 @@ object CategoryMatcher {
      * `abel paul → Food` labels the debits to that person; money from them is
      * still a Transfer.
      */
-    fun forType(category: String, type: TransactionType): String =
-        if (type == TransactionType.CREDIT && category !in CREDIT_CATEGORIES) CREDIT_FALLBACK else category
+    fun forType(category: String, type: TransactionType): String = when (type) {
+        // Money moved between the user's own accounts is Savings going out and
+        // Self Transfer coming back (user, 2026-10-25), whichever a rule says.
+        TransactionType.DEBIT -> if (category == Categories.SELF_TRANSFER) Categories.SAVINGS else category
+        TransactionType.CREDIT -> when {
+            category == Categories.SAVINGS -> Categories.SELF_TRANSFER
+            category !in CREDIT_CATEGORIES -> CREDIT_FALLBACK
+            else -> category
+        }
+    }
 
     /** [getCategory], narrowed by [forType]. Use this wherever the type is known. */
     suspend fun getCategory(database: AppDatabase, merchant: String, type: TransactionType): String =

@@ -239,7 +239,7 @@ Built in `reconciliation/`:
   written with `USER_ENTERED` reads back as a float and breaks the join).
 - `matching.py` — RRN-exact tier, then amount+date±1day, ties left unmatched.
 - `make_sample_pdf.py` — synthetic statement in the real layout, for tests.
-- `test_reconcile.py` — 59 unit tests at the time (73 now), all passing.
+- `test_reconcile.py` — 59 unit tests at the time (75 now), all passing.
 
 Write-back goes to both the Sheet (column D) and `out/merchant_map.json`.
 `--apply` refuses to run when rows fail the balance check unless `--force`.
@@ -330,9 +330,9 @@ then built:
 
 - **Home** replaces the transaction list: Spent this month and Net side by side.
   Spent is debits minus Transfer debits minus Transfer credits (repayments) by
-  default, or every debit (Settings → Spent shows). Net is a running balance
+  default, or every debit (Preferences → Spent shows). Net is a running balance
   (earliest SMS balance + every later row) by default, or the month's net
-  (Settings → Net shows). Tapping Net opens a sheet that checks it against the
+  (Preferences → Net shows). Tapping Net opens a sheet that checks it against the
   latest SMS balance. "Buckey" label over the month picker; rows grouped by day
   or month (⋮, current choice ticked); "N to categorize" filter; sync-error
   banner; first-run welcome.
@@ -346,17 +346,57 @@ then built:
 - `SibParser.parseBalance` reads the balance from the stored SMS (no migration).
   On the device data the running balance matched the latest SMS balance exactly.
 
-Tests: 102 Kotlin (SibParser 20, UnparsedResolver 13, MerchantMapImporter 26,
+Tests at the time: 102 Kotlin (SibParser 20, UnparsedResolver 13, MerchantMapImporter 26,
 CategoryUpdater 8, CategoryMatcher 4, SheetCategorySync 5, SheetRowFormat 5,
-BalanceCalculator 7, MonthSummary 9, Format 5) and 73 Python.
+BalanceCalculator 7, MonthSummary 9, Format 5) and 77 Python (4 for the
+Sheet dashboard).
+
+## Wallet, lending, savings and holdings (2026-10-25) — built, not yet verified on device
+
+Round 1 of 3 toward tracking all the user's money (design:
+`.github/design/wallet.md`). Net = bank + wallet + lent − holding.
+
+- **Wallet:** cash rows (Source `cash`), started by an opening count (the user's
+  ₹168), "+ Cash" payments on Home (Spent), recounts. ATM withdrawals and
+  Transfer debits marked Cash fill it.
+- **ATM SMS parsed** from the user's sample; no date in it, so the arrival time
+  is used (`TransactionParser.parse` gained `receivedAt`).
+- **Transfer or lend:** Transfer debits since the wallet started wait in Pending
+  for Cash / Lend (who). Loans are owed to the user and keep Net.
+- **Savings:** debit Self Transfer renamed (v5 migration + CategoryRepair).
+- **Holdings:** credits held for someone don't touch Spent or Net; payouts link
+  to them; a payout within ±₹10 (Preferences) suggests clearing, a leftover
+  becomes the user's, an overspend counts as Spent. Loans get the same
+  suggestion for credits. Holding rows leave the Transactions tab for a new
+  Holdings tab (rule 10 amended).
+- **Account pages** from the profile initial on Home: Profile (name, Google
+  Sheets, data tools), Preferences (Net, Spent, Matching range), Bank statement.
+  Settings tab removed; bottom bar is Home · Pending.
+- Room v5 (`MIGRATION_4_5`): link columns. Statement diff skips cash rows.
+- **Dashboard tab created by the app** once per layout version: live formulas
+  over Transactions, month and "Spent shows" dropdowns, a category pie and two
+  monthly charts. Sync otherwise writes only Transactions (and Holdings when a
+  holding changes). The desktop `sheet_dashboard.py` was retired.
+- Saving in the category editor returns to Home with a short popup ("Saved
+  category as Food", "Cleared A's holding"); Pending's buttons show the same
+  popup in place.
+
+Tests: 133 Kotlin (SibParser 23, UnparsedResolver 13, MerchantMapImporter 26,
+CategoryUpdater 8, CategoryMatcher 4, SheetCategorySync 5, SheetRowFormat 5,
+BalanceCalculator 7, Ledger 18, MonthSummary 9, Wallet 5, Format 5,
+DashboardSheet 5) and 75 Python.
 
 ## What's left
 
-- **Verify the UI redesign on the Pixel 9a.** Then bring `CategoryEditorScreen`
-  and `ResolveMessageScreen` in line with the UI rules.
+- **Verify the wallet round on the Pixel 9a**, including the v5 migration.
+- **Round 2: other bank accounts. Round 3: Business profile** (separate DB and
+  Sheet per profile).
+
+- **Verify the UI redesign on the Pixel 9a.** Then bring `ResolveMessageScreen`
+  in line with the UI rules.
 - **PDF statement straight into the app**, replacing the desktop script.
 - **Autopay / e-mandate** messages (currently dismissed from the Pending tab).
-- **More SIB SMS formats:** ATM, POS/card, NEFT/IMPS/RTGS, failed/reversed, and
+- **More SIB SMS formats:** POS/card, NEFT/IMPS/RTGS, failed/reversed, and
   the one queued UTIB credit whose payee has a character outside `[\w\s]`.
 - Stage 6 optional: flag repeated unparsed patterns per sender.
 - Stage 4.5 (on-device Gemini Nano): proposed only; needs a rule 6 amendment.

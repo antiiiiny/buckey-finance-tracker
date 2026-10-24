@@ -22,9 +22,11 @@ import kotlinx.coroutines.withContext
  *    "Uncategorized". That label meant "unknown" all along, and an honest
  *    "Uncategorized" is what the Stage 7 merchant import recomputes. Done once,
  *    so a debit the user marks Transfer by hand afterwards is never undone.
- * 4. Move any credit outside Income / Transfer / Self Transfer to Transfer
+ * 4. Move any credit outside [CategoryMatcher.CREDIT_CATEGORIES] to Transfer
  *    (user's rule, 2026-10-24: money in is income or a transfer). Every launch,
  *    so the rule holds whichever path wrote the row.
+ * 5. Rename any debit "Self Transfer" to "Savings" (user, 2026-10-25). The v5
+ *    migration did it once; this catches rows an import labelled since.
  */
 object CategoryRepair {
 
@@ -56,12 +58,14 @@ object CategoryRepair {
         val credits = database.transactionDao().normalizeCreditCategories(
             CategoryMatcher.CREDIT_CATEGORIES, CategoryMatcher.CREDIT_FALLBACK
         )
+        val savings = database.transactionDao().renameDebitCategory(Categories.SELF_TRANSFER, Categories.SAVINGS)
 
-        if (removed + restored + reset + credits > 0) {
+        if (removed + restored + reset + credits + savings > 0) {
             Log.i(
                 TAG,
                 "Removed $removed generic rule(s), restored $restored starter rule(s), " +
-                    "reset $reset row(s), moved $credits credit(s) to ${CategoryMatcher.CREDIT_FALLBACK}"
+                    "reset $reset row(s), moved $credits credit(s) to ${CategoryMatcher.CREDIT_FALLBACK}, " +
+                    "renamed $savings debit(s) to ${Categories.SAVINGS}"
             )
         }
         Result(removed, restored, reset, credits)

@@ -84,6 +84,18 @@ object PreviewData {
         ).sortedByDescending { it.date }
     }
 
+    /** [loaded] plus a wallet, a loan and a holding, for the money sheet. */
+    val withMoney: List<TransactionEntity> by lazy {
+        val held = tx("A FRIEND", 5000.0, TransactionType.CREDIT, "Holding", 2, 10)
+        val lent = tx("UPI", 500.0, TransactionType.DEBIT, "Lend", 1, 12)
+        loaded + listOf(
+            tx("Opening cash", 168.0, TransactionType.CREDIT, "Wallet Adjustment", 3, 9)
+                .copy(senderAddress = "CASH", accountLast4 = "cash"),
+            held.copy(linkKind = "HOLD_IN", linkGroup = held.transactionId, counterparty = "A Friend"),
+            lent.copy(linkKind = "LEND", linkGroup = lent.transactionId, counterparty = "Ravi")
+        )
+    }
+
     /** Only older rows, so the selected month (October) is empty. */
     val olderOnly: List<TransactionEntity> by lazy {
         listOf(

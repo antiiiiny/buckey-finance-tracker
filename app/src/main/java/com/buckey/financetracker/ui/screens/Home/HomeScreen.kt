@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -32,6 +34,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -42,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -56,7 +61,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.buckey.financetracker.data.db.AppDatabase
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.sheets.SheetsSyncWorker
+import com.buckey.financetracker.data.db.entities.LinkKind
 import com.buckey.financetracker.data.summary.BalanceCalculator
+import com.buckey.financetracker.data.summary.Ledger
+import com.buckey.financetracker.data.summary.LedgerResult
+import com.buckey.financetracker.data.wallet.CashBook
 import com.buckey.financetracker.data.summary.MonthSummary
 import com.buckey.financetracker.data.summary.NetMode
 import com.buckey.financetracker.data.summary.HomePreferences
@@ -66,6 +75,7 @@ import com.buckey.financetracker.ui.components.Figure
 import com.buckey.financetracker.ui.components.FigurePair
 import com.buckey.financetracker.ui.components.GroupHeader
 import com.buckey.financetracker.ui.components.PreviewData
+import com.buckey.financetracker.ui.components.ProfileAvatar
 import com.buckey.financetracker.ui.components.PreviewSurface
 import com.buckey.financetracker.ui.components.ThemePreviews
 import com.buckey.financetracker.ui.components.TransactionRow
@@ -77,6 +87,7 @@ import com.buckey.financetracker.ui.theme.Spacing
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /** How the home list groups rows; switched from the ⋮ menu. */
@@ -93,7 +104,14 @@ private const val SYNC_STALE_MILLIS = 60 * 60 * 1000L
  * nothing will sync until the user signs in.
  */
 fun staleUnsyncedCount(transactions: List<TransactionEntity>, now: Long, isSignedIn: Boolean): Int =
-    transactions.count { !it.syncedToSheets && (!isSignedIn || it.createdAt < now - SYNC_STALE_MILLIS) }
+    transactions.count {
+        // Holding rows go to the Holdings tab, not Transactions (rule 10).
+        !it.syncedToSheets && it.linkKind !in LinkKind.HOLDING &&
+            (!isSignedIn || it.createdAt < now - SYNC_STALE_MILLIS)
+    }
+
+/** The sheet open over Home, if any. */
+enum class HomeSheet { NONE, VERIFY, MONEY, CASH }
 
 /** Everything the home screen can do; supplied by [HomeScreen], faked in previews. */
 data class HomeActions(
@@ -105,7 +123,10 @@ data class HomeActions(
     val onSignIn: () -> Unit = {},
     val onImportStatements: () -> Unit = {},
     val onDismissWelcome: () -> Unit = {},
-    val onShowVerify: (Boolean) -> Unit = {}
+    val onShowSheet: (HomeSheet) -> Unit = {},
+    val onAddCash: (amount: Double, category: String, note: String, dateMillis: Long) -> Unit = { _, _, _, _ -> },
+    val onRecount: (Double) -> Unit = {},
+    val onOpenAccount: () -> Unit = {}
 )
 
 /**
@@ -118,17 +139,21 @@ data class HomeActions(
 @Composable
 fun HomeScreen(
     database: AppDatabase,
+    snackbar: SnackbarHostState,
     isSignedIn: Boolean,
     onTransactionTap: (Long) -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenAccount: () -> Unit,
+    onOpenProfile: () -> Unit
 ) {
     val context = LocalContext.current
     val transactions by database.transactionDao().getAllTransactions()
         .collectAsStateWithLifecycle(initialValue = null)
 
-    // Re-read on every visit: Settings may have changed them.
+    // Re-read on every visit: Preferences may have changed them.
     val netMode = remember { HomePreferences.netMode(context) }
     val spentMode = remember { HomePreferences.spentMode(context) }
+    val profileName = remember { HomePreferences.profileName(context) }
+    val scope = rememberCoroutineScope()
     val zone = remember { ZoneId.systemDefault() }
     val today = LocalDate.now(zone)
 
@@ -136,7 +161,7 @@ fun HomeScreen(
     var grouping by rememberSaveable { mutableStateOf(Grouping.DAY) }
     var onlyUncategorized by rememberSaveable { mutableStateOf(false) }
     var welcomeDismissed by rememberSaveable { mutableStateOf(false) }
-    var showVerify by rememberSaveable { mutableStateOf(false) }
+    var sheet by rememberSaveable { mutableStateOf(HomeSheet.NONE) }
     var importMessage by remember { mutableStateOf<String?>(null) }
 
     val importStatements = rememberMerchantMapImport(database) { importMessage = it }
@@ -152,19 +177,34 @@ fun HomeScreen(
         staleUnsynced = transactions?.let { staleUnsyncedCount(it, System.currentTimeMillis(), isSignedIn) } ?: 0,
         isSignedIn = isSignedIn,
         importMessage = importMessage,
-        showVerify = showVerify,
+        sheet = sheet,
+        profileName = profileName,
         today = today,
         zone = zone,
+        snackbar = snackbar,
         actions = HomeActions(
             onSelectMonth = { selectedMonth = it.toString(); grouping = Grouping.DAY },
             onGroupingChange = { grouping = it },
             onShowOnlyUncategorized = { onlyUncategorized = it },
             onTransactionTap = onTransactionTap,
             onRetrySync = { SheetsSyncWorker.enqueueOneShot(context) },
-            onSignIn = onOpenSettings,
+            onSignIn = onOpenProfile,
             onImportStatements = importStatements,
             onDismissWelcome = { welcomeDismissed = true },
-            onShowVerify = { showVerify = it }
+            onShowSheet = { sheet = it },
+            onAddCash = { amount, category, note, date ->
+                scope.launch { CashBook.insert(database, CashBook.buildPayment(amount, category, note, date)) }
+                sheet = HomeSheet.NONE
+            },
+            onRecount = { counted ->
+                scope.launch {
+                    val ledger = Ledger.compute(database.transactionDao().getAllOldestFirst())
+                    CashBook.buildCount(
+                        counted, ledger.walletPaise, ledger.walletStart != null, System.currentTimeMillis()
+                    )?.let { CashBook.insert(database, it) }
+                }
+            },
+            onOpenAccount = onOpenAccount
         )
     )
 }
@@ -186,34 +226,50 @@ fun HomeContent(
     staleUnsynced: Int,
     isSignedIn: Boolean,
     importMessage: String?,
-    showVerify: Boolean,
+    sheet: HomeSheet,
+    profileName: String,
     today: LocalDate,
     zone: ZoneId,
-    actions: HomeActions
+    actions: HomeActions,
+    snackbar: SnackbarHostState = remember { SnackbarHostState() }
 ) {
     val rows = transactions.orEmpty()
     val balance = remember(rows) { BalanceCalculator.compute(rows) }
-    val totals = remember(rows, selectedMonth, spentMode) {
-        MonthSummary.totals(rows, selectedMonth, zone, spentMode)
+    val ledger = remember(rows) { Ledger.compute(rows) }
+    val breakdown = NetBreakdown(balance?.balancePaise, ledger.walletPaise, ledger.lentPaise, ledger.holdingPaise)
+    val totals = remember(rows, selectedMonth, spentMode, ledger) {
+        MonthSummary.totals(rows, selectedMonth, zone, spentMode, ledger)
     }
     val months = remember(rows) { MonthSummary.months(rows, zone, YearMonth.from(today)) }
     val uncategorized = remember(rows) { rows.filter(MonthSummary::isUncategorized) }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             HomeTopBar(
                 title = DateLabels.month(selectedMonth, today),
                 months = months,
                 today = today,
                 grouping = grouping,
+                profileInitial = profileName.take(1).uppercase(),
                 actions = actions
             )
+        },
+        floatingActionButton = {
+            if (transactions != null && (rows.isNotEmpty() || !showWelcome)) {
+                ExtendedFloatingActionButton(
+                    onClick = { actions.onShowSheet(HomeSheet.CASH) },
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text("Cash") }
+                )
+            }
         }
     ) { innerPadding ->
         if (transactions == null) return@Scaffold
 
         val netPaise = when (netMode) {
-            NetMode.RUNNING_BALANCE -> balance?.balancePaise ?: if (rows.isEmpty()) 0L else null
+            // Net = bank + wallet + lent - holding (user, 2026-10-25).
+            NetMode.RUNNING_BALANCE -> breakdown.netPaise ?: if (rows.isEmpty()) 0L else null
             NetMode.THIS_MONTH -> totals.netPaise
         }
 
@@ -240,10 +296,15 @@ fun HomeContent(
                             emphasise = (netPaise ?: 0L) >= 0L,
                             modifier = modifier,
                             onClickLabel = "Verify balance",
-                            onClick = if (rows.isEmpty()) null else ({ actions.onShowVerify(true) })
+                            onClick = if (rows.isEmpty()) null else ({ actions.onShowSheet(HomeSheet.VERIFY) })
                         )
                     }
                 )
+            }
+            if (rows.isNotEmpty() && netMode == NetMode.RUNNING_BALANCE) {
+                item(key = "breakdown") {
+                    BreakdownLine(breakdown, onClick = { actions.onShowSheet(HomeSheet.MONEY) })
+                }
             }
             if (uncategorized.isNotEmpty()) {
                 item(key = "uncategorized") {
@@ -279,13 +340,13 @@ fun HomeContent(
                     )
                 }
                 onlyUncategorized && uncategorized.isNotEmpty() ->
-                    dayGroups(uncategorized, today, zone, spentMode, actions.onTransactionTap)
+                    dayGroups(uncategorized, today, zone, spentMode, ledger, actions.onTransactionTap)
                 grouping == Grouping.MONTH ->
-                    monthGroups(rows, today, zone, spentMode, actions.onTransactionTap)
+                    monthGroups(rows, today, zone, spentMode, ledger, actions.onTransactionTap)
                 else -> {
                     val inMonth = rows.filter { MonthSummary.monthOf(it, zone) == selectedMonth }
                     if (inMonth.isNotEmpty()) {
-                        dayGroups(inMonth, today, zone, spentMode, actions.onTransactionTap)
+                        dayGroups(inMonth, today, zone, spentMode, ledger, actions.onTransactionTap)
                     } else {
                         item(key = "empty-month") {
                             EmptyMonth(DateLabels.month(selectedMonth, today))
@@ -308,16 +369,18 @@ fun HomeContent(
             }
         }
 
-        if (showVerify) {
+        if (sheet != HomeSheet.NONE) {
+            val close = { actions.onShowSheet(HomeSheet.NONE) }
             ModalBottomSheet(
-                onDismissRequest = { actions.onShowVerify(false) },
+                onDismissRequest = close,
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
             ) {
-                VerifyBalanceContent(
-                    balance = balance,
-                    zone = zone,
-                    onClose = { actions.onShowVerify(false) }
-                )
+                when (sheet) {
+                    HomeSheet.VERIFY -> VerifyBalanceContent(balance = balance, zone = zone, onClose = close)
+                    HomeSheet.MONEY -> MoneySheetContent(ledger, zone, onRecount = actions.onRecount, onClose = close)
+                    HomeSheet.CASH -> CashPaymentContent(today, zone, onSave = actions.onAddCash, onClose = close)
+                    HomeSheet.NONE -> Unit
+                }
             }
         }
     }
@@ -328,9 +391,10 @@ private fun LazyListScope.dayGroups(
     today: LocalDate,
     zone: ZoneId,
     spentMode: SpentMode,
+    ledger: LedgerResult,
     onTap: (Long) -> Unit
 ) {
-    MonthSummary.byDay(rows, zone, spentMode).forEach { group ->
+    MonthSummary.byDay(rows, zone, spentMode, ledger).forEach { group ->
         item(key = "day-${group.key}") {
             GroupHeader(
                 title = DateLabels.day(group.key, today),
@@ -352,9 +416,10 @@ private fun LazyListScope.monthGroups(
     today: LocalDate,
     zone: ZoneId,
     spentMode: SpentMode,
+    ledger: LedgerResult,
     onTap: (Long) -> Unit
 ) {
-    MonthSummary.byMonth(rows, zone, spentMode).forEach { group ->
+    MonthSummary.byMonth(rows, zone, spentMode, ledger).forEach { group ->
         item(key = "month-${group.key}") {
             GroupHeader(
                 title = DateLabels.month(group.key, today),
@@ -385,6 +450,7 @@ private fun HomeTopBar(
     months: List<YearMonth>,
     today: LocalDate,
     grouping: Grouping,
+    profileInitial: String,
     actions: HomeActions
 ) {
     var monthMenu by remember { mutableStateOf(false) }
@@ -444,6 +510,8 @@ private fun HomeTopBar(
                         )
                     }
             }
+            // The profile, top right (user, 2026-10-25): Profile, Preferences, Bank statement.
+            ProfileAvatar(initial = profileInitial, onClick = actions.onOpenAccount)
         }
     )
 }
@@ -758,7 +826,8 @@ private fun PreviewHome(
             staleUnsynced = staleUnsynced,
             isSignedIn = true,
             importMessage = null,
-            showVerify = false,
+            sheet = HomeSheet.NONE,
+            profileName = "Personal",
             today = PreviewData.today,
             zone = PreviewData.zone,
             actions = HomeActions()

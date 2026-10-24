@@ -16,5 +16,10 @@ data class ParsedTransaction(
     val merchant: String,
     val type: TransactionType,
     val accountLast4: String,
-    val rawRef: String
+    val rawRef: String,
+    /**
+     * A category the format itself proves (an ATM alert is always an ATM
+     * withdrawal), used instead of the merchant rules. Null: let the rules decide.
+     */
+    val categoryHint: String? = null
 )

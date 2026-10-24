@@ -21,15 +21,20 @@ Quote those strings exactly in the steps.
 
 ## Fixed facts about this app
 
-- **Tabs** (bottom bar, left to right): Transactions, Review (badge = unresolved
-  count), Sync, Settings.
+- **Tabs** (bottom bar, left to right): Home, Pending (badge = SMS to resolve +
+  uncategorized + Transfer debits awaiting Cash/Lend). The profile initial at the
+  top right of Home opens Account → Profile (Google Sheets, data tools),
+  Preferences (Net shows, Spent shows, Matching range), Bank statement (merchant
+  map import). "+ Cash" (bottom right of Home) adds a cash payment; the line
+  under Net ("Bank · Wallet · Lent · Holding") opens "Your money".
 - **Logcat tags:** `SmsReceiver`, `SheetsSyncWorker`, `UnparsedResolver`,
-  `MerchantMapImporter`, `MainActivity`, `SettingsScreen`. Filter as
+  `MerchantMapImporter`, `MainActivity`, `GoogleSheetsRepo`, `CategoryRepair`. Filter as
   `package:mine tag:<Tag>`.
 - **Database Inspector:** View → Tool Windows → App Inspection → Database Inspector,
   process `com.buckey.financetracker`. Tables are `transactions`,
   `unparsed_messages` and `category_rules` (22 seeded rows plus learned ones).
-  DB is v4; `transactions` has `category_dirty` and `categorized_by`. If the
+  DB is v5; `transactions` has `category_dirty`, `categorized_by` and the link
+  columns `link_kind`, `link_group`, `counterparty`, `link_amount`. If the
   Inspector hangs on "Waiting for data", Claude can read the DB itself over
   `adb exec-out run-as com.buckey.financetracker cat databases/...`
   (Git Bash needs `MSYS_NO_PATHCONV=1`).

@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.time.Instant
 
 /**
  * BroadcastReceiver that intercepts incoming SMS messages.
@@ -53,13 +54,14 @@ class SmsReceiver : BroadcastReceiver() {
         scope.launch {
             try {
                 val app = FinanceTrackerApp.getInstance()
-                val parsed: ParsedTransaction? = SibParser.parse(senderAddress, fullBody)
+                // The SMS's own timestamp; formats without a date (ATM) need it.
+                val receivedAt = Instant.ofEpochMilli(messages.first().timestampMillis)
+                val parsed: ParsedTransaction? = SibParser.parse(senderAddress, fullBody, receivedAt)
 
                 if (parsed != null) {
                     // Auto-categorize
-                    val category = CategoryMatcher.getCategory(
-                        app.database, parsed.merchant, parsed.type
-                    )
+                    val category = parsed.categoryHint
+                        ?: CategoryMatcher.getCategory(app.database, parsed.merchant, parsed.type)
 
                     // Parse succeeded — write TransactionEntity
                     val transaction = TransactionEntity(

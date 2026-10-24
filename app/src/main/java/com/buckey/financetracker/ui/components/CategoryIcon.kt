@@ -7,7 +7,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Handshake
+import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.LocalAtm
+import androidx.compose.material.icons.outlined.Savings
 import androidx.compose.material.icons.outlined.Category
 import androidx.compose.material.icons.outlined.DirectionsBus
 import androidx.compose.material.icons.outlined.Flight
@@ -46,6 +51,11 @@ fun categoryIcon(category: String?): ImageVector = when (category?.trim()?.lower
     "housing", "home", "room" -> Icons.Outlined.Home
     "income" -> Icons.Outlined.Payments
     "transfer", "self transfer" -> Icons.Outlined.SwapHoriz
+    "savings" -> Icons.Outlined.Savings
+    "atm withdrawal" -> Icons.Outlined.LocalAtm
+    "lend", "loan repaid" -> Icons.Outlined.Handshake
+    "holding" -> Icons.Outlined.Inventory2
+    "wallet adjustment" -> Icons.Outlined.AccountBalanceWallet
     "entertainment" -> Icons.Outlined.Movie
     "health" -> Icons.Outlined.LocalHospital
     "education", "college" -> Icons.Outlined.School
@@ -61,7 +71,12 @@ fun categoryIcon(category: String?): ImageVector = when (category?.trim()?.lower
  * carries the spoken description.
  */
 @Composable
-fun CategoryAvatar(category: String?, type: TransactionType, modifier: Modifier = Modifier) {
+fun CategoryAvatar(
+    category: String?,
+    type: TransactionType,
+    modifier: Modifier = Modifier,
+    cash: Boolean = false
+) {
     val credit = type == TransactionType.CREDIT
     Box(
         modifier = modifier
@@ -74,7 +89,8 @@ fun CategoryAvatar(category: String?, type: TransactionType, modifier: Modifier 
         contentAlignment = Alignment.Center
     ) {
         Icon(
-            imageVector = categoryIcon(category),
+            // Cash rows show the wallet, so they stand out from bank rows.
+            imageVector = if (cash) Icons.Outlined.AccountBalanceWallet else categoryIcon(category),
             contentDescription = null,
             modifier = Modifier.size(Sizes.icon),
             tint = if (credit) MaterialTheme.colorScheme.onPrimaryContainer
