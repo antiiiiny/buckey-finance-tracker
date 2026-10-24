@@ -25,3 +25,5 @@ reconciliation/__pycache__/
 *.pdf
 # Real bank statements: never committed, whatever the file type
 reconciliation/statements/
+# Personal category rules (names real people): never committed
+reconciliation/private/

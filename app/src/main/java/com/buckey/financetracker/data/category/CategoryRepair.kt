@@ -22,6 +22,9 @@ import kotlinx.coroutines.withContext
  *    "Uncategorized". That label meant "unknown" all along, and an honest
  *    "Uncategorized" is what the Stage 7 merchant import recomputes. Done once,
  *    so a debit the user marks Transfer by hand afterwards is never undone.
+ * 4. Move any credit outside Income / Transfer / Self Transfer to Transfer
+ *    (user's rule, 2026-10-24: money in is income or a transfer). Every launch,
+ *    so the rule holds whichever path wrote the row.
  */
 object CategoryRepair {
 
@@ -35,7 +38,7 @@ object CategoryRepair {
     private const val UNCATEGORIZED = "Uncategorized"
 
     /** What a run changed, for logging. */
-    data class Result(val rulesRemoved: Int, val rulesRestored: Int, val rowsReset: Int)
+    data class Result(val rulesRemoved: Int, val rulesRestored: Int, val rowsReset: Int, val creditsFixed: Int)
 
     suspend fun run(context: Context, database: AppDatabase): Result = withContext(Dispatchers.IO) {
         val removed = database.categoryDao().deleteByPatterns(GenericMerchant.all)
@@ -50,9 +53,17 @@ object CategoryRepair {
                 .also { prefs.edit().putBoolean(PREF_TRANSFER_RESET_DONE, true).apply() }
         }
 
-        if (removed + restored + reset > 0) {
-            Log.i(TAG, "Removed $removed generic rule(s), restored $restored starter rule(s), reset $reset row(s)")
+        val credits = database.transactionDao().normalizeCreditCategories(
+            CategoryMatcher.CREDIT_CATEGORIES, CategoryMatcher.CREDIT_FALLBACK
+        )
+
+        if (removed + restored + reset + credits > 0) {
+            Log.i(
+                TAG,
+                "Removed $removed generic rule(s), restored $restored starter rule(s), " +
+                    "reset $reset row(s), moved $credits credit(s) to ${CategoryMatcher.CREDIT_FALLBACK}"
+            )
         }
-        Result(removed, restored, reset)
+        Result(removed, restored, reset, credits)
     }
 }

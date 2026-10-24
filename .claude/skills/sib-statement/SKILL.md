@@ -9,7 +9,29 @@ Everything runs from `reconciliation/` with its venv:
 `reconciliation/.venv/Scripts/python` (Windows). Run the scripts by path from the
 `reconciliation/` directory; read `reconciliation/README.md` for the full flag list.
 
-## 0. Privacy check — before reading anything
+## Unredacted statements: the user runs it, Claude reads only `out/`
+
+Since 2026-10-24 the user doesn't redact. They run the monthly command
+themselves on the real PDF and then delete it:
+
+```
+.venv\Scripts\python sib_statement_diff.py "<statement.pdf>" --apply --push
+```
+
+**Never open, extract, `--inspect` or `--statement-only` a statement the user
+hasn't said is redacted**, including anything in `statements/`. Review the run
+from its outputs only:
+- `out/reconciliation_<date>.txt`: the report plus a RUN block (date range,
+  balance failures, map counts, whether the Sheet was written and the phone got
+  the file).
+- `out/merchant_map.json`: fixes, missing rows, rules.
+- The phone's database over adb, after the user imports and syncs.
+
+If the run failed on the PDF itself (balance failures, no rows, a new layout),
+ask the user for a redacted copy to tune against. Don't ask for the unredacted
+one.
+
+## 0. Privacy check — before reading anything (redacted files only)
 
 - Real statements live in `reconciliation/statements/`. Confirm with
   `git check-ignore -v reconciliation/statements/<file>` that the file is ignored

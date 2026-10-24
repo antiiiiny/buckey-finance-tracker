@@ -230,4 +230,75 @@ class MerchantMapImporterTest {
         assertTrue(summary, summary.contains("1 already recorded"))
         assertTrue(summary, summary.contains("cleared 2 from Review"))
     }
+
+    // ==================== STATEMENT REFS, RULES, OVERRIDES ====================
+
+    private fun fullMap(missing: String = "", rules: String = "", overrides: String = "") = """
+        {
+          "schema": 1,
+          "fixes": [],
+          "missing": [$missing],
+          "rules": [$rules],
+          "overrides": [$overrides]
+        }
+    """.trimIndent()
+
+    @Test
+    fun `accepts a statement stand-in reference for rows with no RRN`() {
+        val entry = """{"rrn": "STMT-20260625-D-11800", "date": "2026-06-25", "amount": "118.00",
+            "type": "DEBIT", "merchant": "SMS CHARGES"}"""
+        val second = """{"rrn": "STMT-20260625-D-11800-2", "date": "2026-06-25", "amount": "118.00",
+            "type": "DEBIT", "merchant": "SMS CHARGES"}"""
+        val parsed = MerchantMapImporter.parse(fullMap(missing = "$entry,$second")).missing
+        assertEquals(listOf("STMT-20260625-D-11800", "STMT-20260625-D-11800-2"), parsed.map { it.rrn })
+    }
+
+    @Test
+    fun `rejects a malformed stand-in reference`() {
+        val entry = """{"rrn": "STMT-June-D-1", "date": "2026-06-25", "amount": "1.00", "type": "DEBIT"}"""
+        assertTrue(MerchantMapImporter.parse(fullMap(missing = entry)).missing.isEmpty())
+    }
+
+    @Test
+    fun `parses rules, normalizing the pattern`() {
+        val rules = MerchantMapImporter.parse(
+            fullMap(rules = """{"pattern": "  JJ Stall ", "category": "Food"}""")
+        ).rules
+        assertEquals(listOf(MerchantMapImporter.Rule("jj stall", "Food")), rules)
+    }
+
+    @Test
+    fun `refuses generic, short or category-less rules`() {
+        val rules = MerchantMapImporter.parse(
+            fullMap(
+                rules = listOf(
+                    """{"pattern": "upi", "category": "Transfer"}""",
+                    """{"pattern": "ab", "category": "Food"}""",
+                    """{"pattern": "santosh", "category": ""}""",
+                    """{"pattern": "santosh", "category": "Food"}"""
+                ).joinToString(",")
+            )
+        ).rules
+        assertEquals(listOf(MerchantMapImporter.Rule("santosh", "Food")), rules)
+    }
+
+    @Test
+    fun `parses overrides and skips bad references`() {
+        val overrides = MerchantMapImporter.parse(
+            fullMap(
+                overrides = """{"rrn": "620896250099", "category": "Food"},
+                    {"rrn": "not-a-ref", "category": "Food"}"""
+            )
+        ).overrides
+        assertEquals(listOf(MerchantMapImporter.Override("620896250099", "Food")), overrides)
+    }
+
+    @Test
+    fun `summary reports rules and overrides`() {
+        val summary = MerchantMapImporter.ImportResult(
+            rulesSaved = 50, rowsRecategorized = 140, overridesApplied = 1
+        ).summary()
+        assertTrue(summary, summary.contains("Saved 50 category rules; recategorized 140 transactions"))
+        assertTrue(summary, summary.contains("1 one-off override"))
+    }
 }

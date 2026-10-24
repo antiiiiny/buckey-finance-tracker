@@ -130,7 +130,8 @@ object UnparsedResolver {
     ): Outcome = withContext(Dispatchers.IO) {
         val merchant = entry.merchant.trim()
         val chosen = entry.category.trim()
-        val category = chosen.ifEmpty { CategoryMatcher.getCategory(database, merchant) }
+        val picked = chosen.ifEmpty { CategoryMatcher.getCategory(database, merchant) }
+        val category = entry.type?.let { CategoryMatcher.forType(picked, it) } ?: picked
         val transaction = buildTransaction(message, entry, category)
 
         val outcome = database.withTransaction {

@@ -38,14 +38,16 @@ layer — the wiring is inline in the entry points themselves.
                        └─ re-runs CategoryMatcher on the repaired merchant
                           (Stage 7 write-back; never touches Sheets)
 
-Room is the source of truth (rule 8). Sheets is an append-only synced copy keyed
-by `transaction_id`. Nothing is ever read back from Sheets into Room.
+Room is the source of truth (rule 8). Sheets is a synced copy keyed by
+`transaction_id`: rows are appended once, and the only in-place write is a
+synced row's Category cell (rule 10, amended 2026-10-24). Nothing is ever read
+back from Sheets into Room except column A, to locate rows.
 
 Key files:
 - `data/sms/SmsReceiver.kt` — live capture + full pipeline, the real orchestrator
 - `data/sms/SmsBackfill.kt` — historical capture, parallel copy of the same logic
 - `data/parser/banks/SibParser.kt` — the only parser
-- `data/db/AppDatabase.kt` — 3 entities, v2, seeded with 22 category rules
+- `data/db/AppDatabase.kt` — 3 entities, v3 (`MIGRATION_2_3` adds `category_dirty`), seeded with 22 category rules
 - `data/sheets/SheetsSyncWorker.kt` — the only network caller
 - `data/importer/MerchantMapImporter.kt` — applies the Stage 7 merchant map to Room
 - `data/review/UnparsedResolver.kt` — Stage 6: manual entry → `TransactionEntity`
@@ -135,11 +137,32 @@ ordered by pattern length so the most specific rule wins. Seeded with 22 starter
 rules. **This only ever fires for credits**, because only the credit regex
 captures a payee. Falls through to "Uncategorized".
 
-**Tier 2 — manual, remembered.** `CategoryEditorScreen` writes the chosen
-category to the transaction and, via `MerchantMemory.rememberCategory()`, back
-to `category_rules` so future transactions from that merchant match at tier 1.
-For debits `GenericMerchant.isGeneric()` blocks the rule write, so a debit edit is
-per-transaction only and teaches the system nothing.
+**Tier 2 — manual, remembered.** `CategoryEditorScreen` → `CategoryUpdater`,
+with three scopes the user picks:
+- *Only this transaction* — no rule written (rule 7 as amended).
+- *This and every later transaction* — rule written via
+  `MerchantMemory.rememberCategory()`, plus existing rows dated at or after this
+  one re-labelled.
+- *Every transaction* — rule written, every existing row re-labelled.
+
+"From this merchant" means the new rule is the one `CategoryDao.findMatch` picks
+for the row, so bulk edits never disagree with tier-1 matching. Generic merchants
+(`GenericMerchant.isGeneric()`) are forced to *only this transaction*.
+
+**Credits are Income or Transfer** (user's rule, 2026-10-24). A credit only
+carries Income, Transfer or Self Transfer; anything else, including no rule,
+becomes Transfer (`CategoryMatcher.forType`). Enforced at capture, in bulk SQL
+(`CASE WHEN type = 'CREDIT' ...`), in the editor's picker, and by
+`CategoryRepair` on every launch. So `abel paul → Food` labels payments *to*
+Abel; money *from* Abel is Transfer. Income comes from explicit rules only
+(`joy john` — Joy John Ukken; John Joy Ukken is a different person, Transfer).
+Credit SMS truncate the payer to 8 characters ("JOY JOHN", "RHEA GRA"), so
+credit rules must match the truncated form.
+
+**Sheet categories follow Room.** Every DAO write to `category` sets
+`category_dirty`. After appending, `SheetsSyncWorker` reads column A once,
+then rewrites column H of dirty synced rows in one batch (`SheetCategorySync`),
+clearing the flag only if the category didn't change mid-sync.
 
 **Tier 3 — statement matching on RRN (Stage 7, built). This is the real answer
 for debits.** SIB's PDF statement narration carries the payee, and `rawRef` (the
@@ -163,12 +186,21 @@ no-op. It does **not** re-sync repaired rows — Sheets writes are append-only
 `--apply` is what fixes the Sheet's merchant column; the Sheet's category column
 is not repaired by anything.
 
-The map also carries `missing`: statement rows with no Sheet row, because SIB
-sometimes sends no SMS. The importer inserts each as a new transaction
-(`sender_address = "SIB-STATEMENT"`, empty `raw_body`, `transaction_id` hashed
-over the statement's RRN) unless Room already holds that RRN, and marks any
-queued unparsed SMS naming the same RRN as resolved. Those new rows sync
-normally. Only RRN-bearing rows are exported.
+The map also carries `missing`: **every** statement row the app never
+recorded — unmatched rows in the overlap and everything before capture began,
+because SIB sometimes sends no SMS. The importer inserts each as a new
+transaction (`sender_address = "SIB-STATEMENT"`, empty `raw_body`,
+`transaction_id` hashed over the reference) unless Room already holds that
+reference, and resolves any queued SMS naming it. Rows with no RRN (interest,
+charges, NEFT) get a stable stand-in, `STMT-<yyyymmdd>-<D|C>-<paise>[-n]`, and
+a label with long digit runs removed (the interest narration's only number is
+the account number).
+
+`--rules reconciliation/private/category_rules.json` (gitignored: it names real
+people) adds `rules` (pattern → category) and `overrides` (reference →
+category) to the map. The importer saves the rules first, then relabels every
+row each rule governs — the editor's "Every transaction" selection — then
+applies overrides last.
 
 **`CategoryRepair` runs on every launch** (`data/category/CategoryRepair.kt`).
 The real device was found with 4 rules instead of 22, one being `upi → Transfer`,
@@ -190,7 +222,7 @@ on `SEED_CATEGORIES` in `AppDatabase.kt` for why, and do not re-add them.
 |---|---|
 | 0 Project setup | Done. AGP 8.7.3, Kotlin 2.0.21, Gradle 8.9, KSP, compileSdk 35, minSdk 26. |
 | 1 SMS capture | Done, verified on-device. Backfill blocked on Android 14+ by design. |
-| 2 Local storage | Done. 3 entities, 3 DAOs, `AppDatabase` v2. |
+| 2 Local storage | Done. 3 entities, 3 DAOs, `AppDatabase` v3 (migration from v2; never rely on the destructive fallback). |
 | 3 Parsing | Done for UPI debit/credit only. 15 passing unit tests. See limits above. |
 | 4 Categorization | Done, but only reaches credits. Debits have no payee to match on and land as "Uncategorized" by design. |
 | 5 Sheets sync | Done and working. Deviations: sheet ID is baked in at build time from `secrets.properties` into `BuildConfig.GOOGLE_SHEET_ID` rather than user-entered; sync interval is 15 min, not the 6 h the spec suggests. |
@@ -299,7 +331,10 @@ violate accidentally:
   Never request Drive scope.
 - Non-whitelisted senders are rejected at the receiver, before the parser.
 - Whitelisted SMS that fail to parse are persisted, never dropped.
-- Sheets writes are append-only and deduped on `transaction_id`.
+- Sheets rows are appended once and deduped on `transaction_id`; only the
+  Category cell of a synced row may be rewritten (rule 10, amended).
+- Schema changes need a real `Migration`. `fallbackToDestructiveMigration()` is
+  still set, so a version bump without one wipes the user's data.
 - Raw SMS bodies stay in Room for debugging: never logged, never networked,
   never shown outside a dedicated debug view. `ResolveMessageScreen` is that
   view — the body is hidden until the user taps "Show original SMS".
@@ -322,9 +357,17 @@ violate accidentally:
 - **Queued credits from before the parser fix stay queued.** The fix only applies
   to new SMS. Don't resolve them by hand: the next statement import adds them and
   clears them by RRN, whereas a hand-entered row with no RRN would be duplicated.
-- **Sheet categories go stale.** Room recomputes categories after the import and
-  the repair, but the Sheet keeps what was appended (e.g. "Transfer" on debits).
-  Nothing writes the category column today.
+- **Category scopes and Sheet category sync — built, not yet verified on
+  device.** First launch on v3 marks every synced row dirty, so the first sync
+  rewrites all of column H once.
+- **Later (user's list):** PDF statement straight into the app, replacing the
+  desktop script; autopay handling.
+- **Statement backfill + user's rules — verified on device 2026-10-24:** 203
+  pre-capture rows added (530 transactions, Divya Shree 3/3), 96 rules.
+- **Monthly flow (since 2026-10-24):** the user runs `sib_statement_diff.py
+  <pdf> --apply --push` on the *unredacted* statement, handles the PDF password
+  prompt, deletes the PDF, then imports on the phone. Claude reviews only
+  `reconciliation/out/` and the device DB, never the PDF.
 - **One queued credit still fails to parse** (UTIB payer, payee contains a
   character outside `[\w\s]`). Parser work is otherwise deferred by the user.
 - **Tier 3 is closed end to end**, but the round trip is manual: run the script

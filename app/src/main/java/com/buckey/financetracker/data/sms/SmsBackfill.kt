@@ -138,7 +138,7 @@ object SmsBackfill {
                     rawRef = parsed.rawRef,
                     senderAddress = msg.senderAddress,
                     rawBody = msg.rawBody,
-                    category = CategoryMatcher.getCategory(database, parsed.merchant)
+                    category = CategoryMatcher.getCategory(database, parsed.merchant, parsed.type)
                 )
             )
         }

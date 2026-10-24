@@ -52,8 +52,9 @@ ROWS = [
 ]
 
 
-def build(path: Path) -> None:
-    c = canvas.Canvas(str(path), pagesize=A4)
+def build(path: Path, encrypt: str | None = None) -> None:
+    """Write the sample statement; ``encrypt`` password-protects it, like a real one."""
+    c = canvas.Canvas(str(path), pagesize=A4, encrypt=encrypt)
     _, height = A4
     y = height - 60
 

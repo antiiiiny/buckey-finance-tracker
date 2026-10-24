@@ -30,10 +30,10 @@ reconciliation/   sib_statement_diff.py  (separate Python script, not part of th
 4. Every parsed transaction is a `ParsedTransaction` data class with exactly these fields: amount (Double), date (Instant), merchant (String), type (DEBIT or CREDIT enum), accountLast4 (String), rawRef (String).
 5. If a whitelisted SMS fails to parse, insert it into an `unparsed_messages` table and surface it in the UI review queue. Never drop it silently.
 6. Categorization is keyword/merchant-string matching against a local Room table. No LLM call, no network call, for categorization. Ever.
-7. When the user manually recategorizes a transaction, write that merchant→category mapping back to the local table immediately.
+7. When the user manually recategorizes a transaction, write that merchant→category mapping back to the local table immediately — unless the user chooses "Only this transaction" (amended 2026-10-24 at the user's request), or the merchant is generic ("UPI").
 8. Room is the source of truth. Sheets is a synced copy, never the only copy. Every write path goes: SMS → Parser → Room → (later, async) → Sheets.
 9. Sheets sync uses OAuth scoped to `https://www.googleapis.com/auth/spreadsheets` only. Do not request Drive-wide scope.
-10. Sheets writes are append-only, keyed by a stable transaction ID (hash of sender + timestamp + raw SMS body) to prevent duplicate rows on re-sync.
+10. Sheets rows are append-only, keyed by a stable transaction ID (hash of sender + timestamp + raw SMS body) to prevent duplicate rows on re-sync. Rows are never deleted or appended twice. Amended 2026-10-24 at the user's request: the Category cell (column H) of an already-appended row may be rewritten in place when the category changes in Room, located by transaction ID. Room remains the source of truth (rule 8).
 11. Permissions requested by the app: `RECEIVE_SMS`, `READ_SMS`, `INTERNET` (for the Sheets API calls only), and the Google Sign-In scope above. Nothing else. Do not add permissions without the user asking first.
 12. Raw SMS body is stored in Room for parser debugging but is never logged, never included in crash output, never sent over network, never shown in any screen except a dedicated "raw message" debug view.
 13. Every bank parser gets a unit test file with real (redacted/sample) SMS formats as fixtures. No parser ships without a test.

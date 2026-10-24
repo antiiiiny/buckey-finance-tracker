@@ -24,6 +24,12 @@ from models import Confidence, SheetRow, StatementRow, TxnType
 from statement import Columns, extract_payee, extract_ref, validate_balances
 
 
+def json_dump(obj) -> str:
+    import json
+
+    return json.dumps(obj)
+
+
 def sheet_row(
     row_number=2,
     transaction_id="hash1",
@@ -160,11 +166,54 @@ class MissingEntries(unittest.TestCase):
               "type": "CREDIT", "merchant": "AARON JACOB"}],
         )
 
-    def test_rows_without_rrn_are_not_exported(self):
+    def test_rows_without_rrn_get_a_stable_statement_ref(self):
         import sib_statement_diff
 
-        interest = statement_row(narration="xxxx:Int.Pd", ref=None, payee=None)
-        self.assertEqual(sib_statement_diff.missing_entries([interest]), [])
+        charge = statement_row(
+            when=date(2026, 6, 25), amount="118.00", narration="SMS charges including GST-Qtly",
+            ref=None, payee=None,
+        )
+        entry = sib_statement_diff.missing_entries([charge])[0]
+        self.assertEqual(entry["rrn"], "STMT-20260625-D-11800")
+        self.assertEqual(entry["merchant"], "SMS CHARGES INCLUDING GST-QTLY")
+        # Same statement, same ref: a re-import cannot duplicate it.
+        self.assertEqual(sib_statement_diff.missing_entries([charge])[0]["rrn"], entry["rrn"])
+
+    def test_interest_label_never_carries_the_account_number(self):
+        import sib_statement_diff
+
+        interest = statement_row(
+            type_=TxnType.CREDIT, amount="12.00",
+            narration="0000000000001234:Int.Pd:01-04-2026 to 30- 06-2026", ref=None, payee=None,
+        )
+        entry = sib_statement_diff.missing_entries([interest])[0]
+        self.assertEqual(entry["merchant"], "INTEREST")
+        self.assertNotIn("1234", json_dump(entry))
+
+    def test_identical_rows_on_one_day_get_distinct_refs(self):
+        import sib_statement_diff
+
+        row = statement_row(narration="SMS charges", ref=None, payee=None)
+        refs = [e["rrn"] for e in sib_statement_diff.missing_entries([row, row])]
+        self.assertEqual(len(set(refs)), 2)
+        self.assertTrue(refs[1].endswith("-2"))
+
+    def test_rules_file_passes_through(self):
+        import tempfile
+
+        import sib_statement_diff
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rules.json"
+            path.write_text(
+                '{"rules": [{"pattern": "jj stall", "category": "Food"}],'
+                ' "overrides": [{"rrn": "620896250099", "category": "Food"}]}',
+                encoding="utf-8",
+            )
+            loaded = sib_statement_diff.load_rules(path)
+        self.assertEqual(loaded["rules"], [{"pattern": "jj stall", "category": "Food"}])
+        self.assertEqual(loaded["overrides"][0]["rrn"], "620896250099")
+        self.assertEqual(sib_statement_diff.load_rules(None), {"rules": [], "overrides": []})
 
 
 class OverlapScoping(unittest.TestCase):
@@ -512,6 +561,99 @@ class StatementOnlyMode(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._run("--statement-only", "--apply")
 
+
+
+class UnredactedStatementRun(unittest.TestCase):
+    """The user runs the real, unredacted statement themselves; nothing sensitive leaks."""
+
+    def test_file_name_digits_are_masked(self):
+        import sib_statement_diff
+
+        self.assertEqual(
+            sib_statement_diff.safe_name("0000000000001234_Statement_20261024.pdf"),
+            "************1234_Statement_****1024.pdf",
+        )
+        self.assertEqual(sib_statement_diff.safe_name("week.pdf"), "week.pdf")
+
+    def test_rules_default_to_the_private_file(self):
+        from unittest import mock
+
+        import sib_statement_diff
+
+        explicit = Path("elsewhere.json")
+        self.assertEqual(sib_statement_diff.resolve_rules(explicit), explicit)
+        with mock.patch.object(sib_statement_diff, "DEFAULT_RULES", Path("no/such/file.json")):
+            self.assertIsNone(sib_statement_diff.resolve_rules(None))
+
+    def test_push_reports_success_and_failure(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        import sib_statement_diff
+
+        with mock.patch.object(sib_statement_diff, "find_adb", return_value="adb"), \
+                mock.patch.object(sib_statement_diff.subprocess, "run",
+                                  return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as run:
+            self.assertIn("Pushed", sib_statement_diff.push_to_phone(Path("m.json")))
+            self.assertEqual(run.call_args[0][0][1:], ["push", "m.json", sib_statement_diff.PHONE_MAP_PATH])
+
+        failed = SimpleNamespace(returncode=1, stdout="", stderr="adb: no devices/emulators found")
+        with mock.patch.object(sib_statement_diff, "find_adb", return_value="adb"), \
+                mock.patch.object(sib_statement_diff.subprocess, "run", return_value=failed):
+            self.assertIn("no devices", sib_statement_diff.push_to_phone(Path("m.json")))
+
+        with mock.patch.object(sib_statement_diff, "find_adb", return_value=None):
+            self.assertIn("adb not found", sib_statement_diff.push_to_phone(Path("m.json")))
+
+    def test_statement_only_refuses_push(self):
+        import contextlib
+        import io
+
+        import sib_statement_diff
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            sib_statement_diff.main(["x.pdf", "--statement-only", "--push"])
+
+
+class EncryptedStatement(unittest.TestCase):
+    """Bank-issued statements are usually password-protected."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import make_sample_pdf
+        except ImportError:
+            raise unittest.SkipTest("reportlab not installed")
+
+        import tempfile
+
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.pdf_path = Path(cls._tmp.name) / "locked.pdf"
+        make_sample_pdf.build(cls.pdf_path, encrypt="s3cret")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_no_password_asks_for_one(self):
+        import statement
+
+        with self.assertRaises(statement.StatementPasswordRequired):
+            statement.parse_statement(self.pdf_path)
+
+    def test_wrong_password_says_so(self):
+        import statement
+
+        with self.assertRaises(statement.StatementPasswordRequired) as ctx:
+            statement.parse_statement(self.pdf_path, password="nope")
+        self.assertIn("wrong", str(ctx.exception))
+
+    def test_right_password_extracts_every_row(self):
+        import statement
+
+        rows = statement.parse_statement(self.pdf_path, password="s3cret")
+        self.assertEqual(len(rows), 10)
+        self.assertEqual(validate_balances(rows), [])
 
 if __name__ == "__main__":
     unittest.main()

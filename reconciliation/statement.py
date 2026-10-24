@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Iterator, NamedTuple, Optional
 
 import pdfplumber
+from pdfminer.pdfdocument import PDFPasswordIncorrect
+from pdfplumber.utils.exceptions import PdfminerException
 
 from models import StatementRow, TxnType
 
@@ -90,6 +92,26 @@ BALANCE_HEADER = "BALANCE"
 
 class StatementParseError(RuntimeError):
     """Raised when a PDF yields no usable transaction rows."""
+
+
+class StatementPasswordRequired(StatementParseError):
+    """The PDF is encrypted and no (or the wrong) password was given.
+
+    Bank-issued statements usually are. The caller asks for the password; it is
+    never stored, logged, or written anywhere.
+    """
+
+
+def _open(pdf_path: Path, password: Optional[str]):
+    try:
+        return pdfplumber.open(str(pdf_path), password=password or "")
+    except PdfminerException as exc:
+        if exc.args and isinstance(exc.args[0], PDFPasswordIncorrect):
+            raise StatementPasswordRequired(
+                f"{pdf_path.name} is password-protected"
+                + (" and that password is wrong." if password else ".")
+            ) from None
+        raise
 
 
 class Columns(NamedTuple):
@@ -253,8 +275,8 @@ class _Pending:
         )
 
 
-def _iter_rows(pdf_path: Path) -> Iterator[StatementRow]:
-    with pdfplumber.open(str(pdf_path)) as pdf:
+def _iter_rows(pdf_path: Path, password: Optional[str] = None) -> Iterator[StatementRow]:
+    with _open(pdf_path, password) as pdf:
         columns: Optional[Columns] = None
         pending: Optional[_Pending] = None
 
@@ -341,9 +363,9 @@ def validate_balances(rows: list[StatementRow]) -> list[str]:
     return problems
 
 
-def parse_statement(pdf_path: Path) -> list[StatementRow]:
+def parse_statement(pdf_path: Path, password: Optional[str] = None) -> list[StatementRow]:
     """Extract transaction rows from a SIB PDF statement."""
-    rows = list(_iter_rows(pdf_path))
+    rows = list(_iter_rows(pdf_path, password))
     if not rows:
         raise StatementParseError(
             f"No transaction rows extracted from {pdf_path.name}.\n"
@@ -354,10 +376,10 @@ def parse_statement(pdf_path: Path) -> list[StatementRow]:
     return rows
 
 
-def inspect(pdf_path: Path, max_pages: int = 2, max_lines: int = 45) -> str:
+def inspect(pdf_path: Path, max_pages: int = 2, max_lines: int = 45, password: Optional[str] = None) -> str:
     """Dump what pdfplumber sees, so the extractor can be tuned against reality."""
     out: list[str] = []
-    with pdfplumber.open(str(pdf_path)) as pdf:
+    with _open(pdf_path, password) as pdf:
         out.append(f"{pdf_path.name}: {len(pdf.pages)} pages")
         columns: Optional[Columns] = None
 

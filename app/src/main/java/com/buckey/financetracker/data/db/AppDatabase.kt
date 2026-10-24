@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.buckey.financetracker.FinanceTrackerApp
 import com.buckey.financetracker.data.db.dao.CategoryDao
@@ -22,7 +23,7 @@ import kotlinx.coroutines.launch
         UnparsedMessageEntity::class,
         CategoryRuleEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -42,11 +43,31 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "buckey_finance_db"
                 )
+                    // Real migrations first. The destructive fallback stays only for
+                    // versions with no path, so it must never be the route from v2.
+                    .addMigrations(MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .addCallback(SEED_CALLBACK)
                     .build()
                 INSTANCE = instance
                 instance
+            }
+        }
+
+        /**
+         * v3 adds `transactions.category_dirty` so the sync can rewrite a synced
+         * row's Category cell (rule 10, amended 2026-10-24).
+         *
+         * Every row already in the Sheet starts dirty. Their Sheet categories
+         * predate CategoryRepair and the merchant import, so the first sync after
+         * upgrading refreshes them all once.
+         */
+        internal val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE transactions ADD COLUMN category_dirty INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL("UPDATE transactions SET category_dirty = 1 WHERE synced_to_sheets = 1")
             }
         }
 

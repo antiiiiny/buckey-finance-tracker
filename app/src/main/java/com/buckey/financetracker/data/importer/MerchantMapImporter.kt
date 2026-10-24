@@ -2,7 +2,9 @@ package com.buckey.financetracker.data.importer
 
 import android.util.Log
 import com.buckey.financetracker.data.category.CategoryMatcher
+import com.buckey.financetracker.data.category.CategoryUpdater
 import com.buckey.financetracker.data.category.GenericMerchant
+import com.buckey.financetracker.data.category.MerchantMemory
 import com.buckey.financetracker.data.db.AppDatabase
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.db.entities.TransactionType
@@ -81,14 +83,28 @@ object MerchantMapImporter {
         val merchant: String
     )
 
+    /** A category rule from the user's rules file: merchant pattern → category. */
+    data class Rule(val pattern: String, val category: String)
+
+    /** A one-transaction category, by reference; wins over every rule. */
+    data class Override(val rrn: String, val category: String)
+
     /** A parsed `merchant_map.json`. */
     data class MerchantMap(
         val schema: Int,
         val source: String,
         val generatedAt: String,
         val fixes: List<Fix>,
-        val missing: List<Missing> = emptyList()
+        val missing: List<Missing> = emptyList(),
+        val rules: List<Rule> = emptyList(),
+        val overrides: List<Override> = emptyList()
     )
+
+    /**
+     * A reference the importer accepts: a bank RRN (digits), or the script's
+     * stand-in for statement rows that have none (`STMT-20260625-D-11800[-2]`).
+     */
+    private val REFERENCE = Regex("""\d+|STMT-\d{8}-[DC]-\d+(-\d+)?""")
 
     /** Outcome of applying a map, for display in Settings. */
     data class ImportResult(
@@ -99,7 +115,10 @@ object MerchantMapImporter {
         val added: Int = 0,
         val alreadyRecorded: Int = 0,
         val missingTotal: Int = 0,
-        val queueResolved: Int = 0
+        val queueResolved: Int = 0,
+        val rulesSaved: Int = 0,
+        val rowsRecategorized: Int = 0,
+        val overridesApplied: Int = 0
     ) {
         fun summary(): String {
             val merchants = when {
@@ -109,11 +128,17 @@ object MerchantMapImporter {
                     (if (notFound > 0) ", $notFound not on this device" else "") +
                     (if (alreadySpecific > 0) ", $alreadySpecific already named" else "") + "."
             }
-            if (missingTotal == 0) return merchants
-            val missing = "Added $added of $missingTotal missing transactions" +
-                (if (alreadyRecorded > 0) ", $alreadyRecorded already recorded" else "") +
-                (if (queueResolved > 0) ", cleared $queueResolved from Review" else "") + "."
-            return "$merchants\n$missing"
+            val lines = mutableListOf(merchants)
+            if (missingTotal > 0) {
+                lines += "Added $added of $missingTotal missing transactions" +
+                    (if (alreadyRecorded > 0) ", $alreadyRecorded already recorded" else "") +
+                    (if (queueResolved > 0) ", cleared $queueResolved from Review" else "") + "."
+            }
+            if (rulesSaved > 0 || overridesApplied > 0) {
+                lines += "Saved $rulesSaved category rules; recategorized $rowsRecategorized transactions" +
+                    (if (overridesApplied > 0) ", $overridesApplied one-off override(s)" else "") + "."
+            }
+            return lines.joinToString("\n")
         }
     }
 
@@ -171,8 +196,48 @@ object MerchantMapImporter {
             source = root.optString("source", "unknown"),
             generatedAt = root.optString("generated_at", ""),
             fixes = fixes,
-            missing = parseMissing(root)
+            missing = parseMissing(root),
+            rules = parseRules(root),
+            overrides = parseOverrides(root)
         )
+    }
+
+    /**
+     * The optional `rules` list. A generic pattern ("upi") is refused for the same
+     * reason the editor refuses it, and a very short one would match nearly
+     * every merchant through `LIKE '%pattern%'`.
+     */
+    private fun parseRules(root: JSONObject): List<Rule> {
+        val array = root.optJSONArray("rules") ?: return emptyList()
+        return buildList {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val pattern = item.optString("pattern").trim().lowercase()
+                val category = item.optString("category").trim()
+                if (pattern.length < 3 || category.isEmpty() || GenericMerchant.isGeneric(pattern)) {
+                    Log.w(TAG, "Skipping rule $i — pattern too short, generic, or no category")
+                    continue
+                }
+                add(Rule(pattern, category))
+            }
+        }
+    }
+
+    /** The optional `overrides` list: one transaction's category, by reference. */
+    private fun parseOverrides(root: JSONObject): List<Override> {
+        val array = root.optJSONArray("overrides") ?: return emptyList()
+        return buildList {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val rrn = item.optString("rrn").trim()
+                val category = item.optString("category").trim()
+                if (!REFERENCE.matches(rrn) || category.isEmpty()) {
+                    Log.w(TAG, "Skipping override $i — invalid reference or no category")
+                    continue
+                }
+                add(Override(rrn, category))
+            }
+        }
     }
 
     /**
@@ -197,7 +262,7 @@ object MerchantMapImporter {
                     "CREDIT" -> TransactionType.CREDIT
                     else -> null
                 }
-                if (rrn.isEmpty() || !rrn.all { it.isDigit() } || date == null ||
+                if (!REFERENCE.matches(rrn) || date == null ||
                     amount == null || amount <= BigDecimal.ZERO || type == null
                 ) {
                     Log.w(TAG, "Skipping missing entry $i — invalid rrn, date, amount or type")
@@ -225,6 +290,12 @@ object MerchantMapImporter {
             var notFound = 0
             var alreadySpecific = 0
 
+            // Rules first, so repaired merchants and added rows categorize
+            // against them below.
+            for (rule in map.rules) {
+                MerchantMemory.rememberCategory(database, rule.pattern, rule.category)
+            }
+
             for (fix in map.fixes) {
                 val existing = dao.getByTransactionId(fix.transactionId)
                 if (existing == null) {
@@ -239,7 +310,7 @@ object MerchantMapImporter {
                 // Preserve a category the user chose by hand.
                 val current = existing.category
                 val category = if (current.isNullOrBlank() || current == UNCATEGORIZED) {
-                    CategoryMatcher.getCategory(database, fix.merchant)
+                    CategoryMatcher.getCategory(database, fix.merchant, existing.type)
                 } else {
                     current
                 }
@@ -265,11 +336,41 @@ object MerchantMapImporter {
                 queueResolved += database.unparsedMessageDao().resolveByReference(missing.rrn)
             }
 
+            // Then relabel every existing row each rule governs — the same
+            // selection as "Every transaction from X" in the category editor —
+            // and finally the one-off overrides, which beat any rule.
+            var rowsRecategorized = 0
+            for (rule in map.rules) {
+                rowsRecategorized += CategoryUpdater.applyRuleToExisting(database, rule.pattern, rule.category)
+            }
+            // Fill rows still Uncategorized from whichever rule now wins for them.
+            // A longer rule saved earlier with "This and later" (jj stall christ)
+            // beats a shorter imported one (jj stall) for its own earlier rows,
+            // which neither pass above touches. Uncategorized means no decision
+            // yet, so filling it never overrides a choice the user made.
+            for (row in dao.getUncategorized()) {
+                if (GenericMerchant.isGeneric(row.merchant)) continue
+                val category = CategoryMatcher.getCategory(database, row.merchant, row.type)
+                if (category != UNCATEGORIZED) {
+                    dao.updateCategory(row.id, category)
+                    rowsRecategorized++
+                }
+            }
+
+            var overridesApplied = 0
+            for (override in map.overrides) {
+                overridesApplied += dao.updateCategoryByRawRef(
+                    override.rrn, override.category,
+                    CategoryMatcher.CREDIT_CATEGORIES, CategoryMatcher.CREDIT_FALLBACK
+                )
+            }
+
             Log.i(
                 TAG,
                 "Merchant map from ${map.source}: $applied applied, " +
                     "$notFound not found, $alreadySpecific already specific; " +
-                    "$added added, $alreadyRecorded already recorded, $queueResolved queue resolved"
+                    "$added added, $alreadyRecorded already recorded, $queueResolved queue resolved; " +
+                    "${map.rules.size} rules, $rowsRecategorized recategorized, $overridesApplied overrides"
             )
             ImportResult(
                 applied = applied,
@@ -279,7 +380,10 @@ object MerchantMapImporter {
                 added = added,
                 alreadyRecorded = alreadyRecorded,
                 missingTotal = map.missing.size,
-                queueResolved = queueResolved
+                queueResolved = queueResolved,
+                rulesSaved = map.rules.size,
+                rowsRecategorized = rowsRecategorized,
+                overridesApplied = overridesApplied
             )
         }
 
@@ -296,7 +400,7 @@ object MerchantMapImporter {
             rawRef = rrn,
             senderAddress = STATEMENT_SENDER,
             rawBody = "",
-            category = CategoryMatcher.getCategory(database, merchant)
+            category = CategoryMatcher.getCategory(database, merchant, type)
         )
     }
 

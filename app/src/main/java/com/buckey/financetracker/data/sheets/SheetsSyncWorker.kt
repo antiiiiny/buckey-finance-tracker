@@ -12,6 +12,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.Constraints
 import com.buckey.financetracker.FinanceTrackerApp
+import com.buckey.financetracker.data.db.AppDatabase
 import java.util.concurrent.TimeUnit
 
 /**
@@ -19,8 +20,9 @@ import java.util.concurrent.TimeUnit
  *
  * Runs on [Dispatchers.IO] (default for CoroutineWorker).
  * Queries transactions where [TransactionEntity.syncedToSheets] is false,
- * checks dedup via [GoogleSheetsRepository.isDuplicate], appends new rows,
- * then marks each transaction as synced.
+ * checks dedup against one read of the Sheet's ID column, appends new rows,
+ * then marks each transaction as synced. Finally rewrites the Category cell of
+ * synced rows whose category changed since (rule 10, amended 2026-10-24).
  */
 class SheetsSyncWorker(
     appContext: Context,
@@ -93,21 +95,20 @@ class SheetsSyncWorker(
             // Ensure headers exist in the sheet
             repository.ensureHeaders()
 
-            // Fetch unsynced transactions
-            val unsynced = database.transactionDao().getUnsyncedTransactions()
-            if (unsynced.isEmpty()) {
-                Log.i(TAG, "No unsynced transactions to sync")
-                return Result.success()
-            }
+            // One read of column A serves both the dedup check and the category
+            // pass. Null means the read failed; fall back to per-row dedup.
+            var rowIndex = repository.fetchRowIndex()
 
+            val unsynced = database.transactionDao().getUnsyncedTransactions()
             var syncedCount = 0
             var skippedCount = 0
             var failedCount = 0
 
             for (tx in unsynced) {
                 try {
-                    // Dedup check
-                    if (repository.isDuplicate(tx.transactionId)) {
+                    val duplicate = rowIndex?.containsKey(tx.transactionId)
+                        ?: repository.isDuplicate(tx.transactionId)
+                    if (duplicate) {
                         database.transactionDao().markAsSynced(tx.id)
                         skippedCount++
                         continue
@@ -126,9 +127,15 @@ class SheetsSyncWorker(
                 }
             }
 
-            Log.i(TAG, "Sync complete: $syncedCount synced, $skippedCount skipped (duplicates), $failedCount failed")
+            if (unsynced.isNotEmpty()) {
+                Log.i(TAG, "Sync complete: $syncedCount synced, $skippedCount skipped (duplicates), $failedCount failed")
+            }
 
-            if (failedCount > 0 && syncedCount == 0) {
+            // Appends add rows at the bottom, so re-read only if there were any.
+            if (syncedCount > 0) rowIndex = repository.fetchRowIndex()
+            val categoriesOk = rowIndex?.let { syncCategories(database, repository, it) } ?: false
+
+            if ((failedCount > 0 && syncedCount == 0) || !categoriesOk) {
                 Result.retry()
             } else {
                 Result.success()
@@ -137,5 +144,29 @@ class SheetsSyncWorker(
             Log.e(TAG, "Sync failed: ${e.message}")
             Result.retry()
         }
+    }
+
+    /**
+     * Rewrites the Category cell of synced rows whose category changed in Room
+     * (rule 10, amended 2026-10-24). Returns false if the write failed.
+     *
+     * A row missing from the Sheet stays dirty: it may have been appended after
+     * [rowIndex] was read, and if it was deleted by hand, retrying costs nothing.
+     */
+    private suspend fun syncCategories(
+        database: AppDatabase,
+        repository: GoogleSheetsRepository,
+        rowIndex: Map<String, Int>
+    ): Boolean {
+        val dao = database.transactionDao()
+        val dirty = dao.getCategoryDirty()
+        if (dirty.isEmpty()) return true
+
+        val plan = SheetCategorySync.plan(rowIndex, dirty)
+        if (!repository.updateCells(plan.updates)) return false
+        plan.updates.forEach { dao.clearCategoryDirty(it.transaction.id, it.transaction.category) }
+
+        Log.i(TAG, "Category sync: ${plan.updates.size} updated, ${plan.notInSheet.size} not in sheet")
+        return true
     }
 }

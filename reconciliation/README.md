@@ -31,6 +31,30 @@ run opens a browser and caches `token.json`. Both are gitignored.
 The sheet ID is read from `secrets.properties` at the repo root — the same
 `GOOGLE_SHEET_ID` the app builds into `BuildConfig`. Override with `--sheet-id`.
 
+## Monthly run (unredacted statement)
+
+No redaction needed. Run it yourself from PowerShell, then delete the PDF:
+
+```powershell
+cd reconciliation
+.venv\Scripts\python sib_statement_diff.py "C:\path\to\statement.pdf" --apply --push
+```
+
+- Asks for the PDF password if the statement is protected. It's read without
+  echo and never stored or written anywhere.
+- Checks every row against the running balance and refuses `--apply` /
+  `--push` if any fail.
+- `--apply` writes recovered merchant names into the Sheet; `--push` copies
+  `out/merchant_map.json` to the phone over adb. Your rules in
+  `private/category_rules.json` are included automatically.
+- Then on the phone: **Settings → Import Merchant Map**, then **Sync Now**.
+
+What's left behind, in `out/`, is safe to share for review: payee names,
+amounts, dates and RRNs only. No account number, name or address. Long digit
+runs in the file name are masked, and non-UPI rows (interest, charges) carry a
+label instead of their narration. Don't run `--inspect` on an unredacted file:
+it dumps every line of the PDF, header included.
+
 ## Use
 
 ```bash
@@ -88,7 +112,11 @@ cannot reach the phone:
   what it *stores*. `fixes` maps `transaction_id → merchant`. `missing` lists
   statement-only rows (RRN, date, amount, type, payee): SIB sometimes sends no SMS,
   so the app adds these as new transactions unless it already holds the RRN.
-  Rows without an RRN are not exported.
+  Every untracked row is exported, including everything before capture began;
+  rows with no RRN get a stable `STMT-…` reference so re-imports never duplicate.
+- **Category rules** (optional): `--rules private/category_rules.json` adds the
+  user's `rules` and `overrides`, which the app applies on import. The
+  `private/` folder is gitignored.
 
 Merchant fixes are restricted to **RRN-exact matches** unless you pass
 `--allow-fuzzy-merchant`. An amount+date match is a strong hint, not an

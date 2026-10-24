@@ -53,6 +53,14 @@ data class TransactionEntity(
     @ColumnInfo(name = "synced_to_sheets")
     val syncedToSheets: Boolean = false,
 
+    /**
+     * True when the category changed after this row reached the Sheet, so the
+     * next sync rewrites its Category cell in place (rule 10, amended
+     * 2026-10-24). Every DAO write to `category` sets it.
+     */
+    @ColumnInfo(name = "category_dirty", defaultValue = "0")
+    val categoryDirty: Boolean = false,
+
     /** Epoch millis when this row was created */
     @ColumnInfo(name = "created_at")
     val createdAt: Long = System.currentTimeMillis()

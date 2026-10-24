@@ -6,6 +6,7 @@ import com.buckey.financetracker.BuildConfig
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.google.api.client.googleapis.json.GoogleJsonResponseException
 import com.google.api.services.sheets.v4.Sheets
+import com.google.api.services.sheets.v4.model.BatchUpdateValuesRequest
 import com.google.api.services.sheets.v4.model.ValueRange
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -16,7 +17,9 @@ import java.util.Locale
 /**
  * Repository for Google Sheets API v4 operations.
  *
- * Append-only writes keyed by transactionId hash for dedup (Rule 10).
+ * Rows are appended once, keyed by transactionId hash for dedup (Rule 10). The
+ * one in-place write is a synced row's Category cell, via [updateCells] (rule 10
+ * as amended 2026-10-24; see SheetCategorySync).
  * Scoped to the single spreadsheet identified by [BuildConfig.GOOGLE_SHEET_ID].
  */
 class GoogleSheetsRepository(private val context: Context) {
@@ -181,6 +184,41 @@ class GoogleSheetsRepository(private val context: Context) {
             false
         }
     }
+
+    /**
+     * Reads column A once and returns transaction ID -> 1-based row, or null on
+     * error. One read per sync, instead of one full-sheet read per transaction.
+     */
+    suspend fun fetchRowIndex(): Map<String, Int>? = withContext(Dispatchers.IO) {
+        val service = sheetsService ?: return@withContext null
+        try {
+            val columnA = service.spreadsheets().values()
+                .get(sheetId, "$SHEET_NAME!A:A")
+                .execute()
+            SheetCategorySync.indexRows(columnA.getValues())
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading transaction IDs: ${e.message}")
+            null
+        }
+    }
+
+    /** Writes each update's value into its cell, all in one batch call. */
+    suspend fun updateCells(updates: List<SheetCategorySync.CellUpdate>): Boolean =
+        withContext(Dispatchers.IO) {
+            val service = sheetsService ?: return@withContext false
+            if (updates.isEmpty()) return@withContext true
+            try {
+                val request = BatchUpdateValuesRequest()
+                    .setValueInputOption("RAW")
+                    .setData(updates.map { ValueRange().setRange(it.range).setValues(listOf(listOf(it.value))) })
+                service.spreadsheets().values().batchUpdate(sheetId, request).execute()
+                Log.i(TAG, "Updated ${updates.size} category cell(s)")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Error updating category cells: ${e.message}")
+                false
+            }
+        }
 
     /** Returns the sheets service instance, or null if not authenticated. */
     fun isAuthenticated(): Boolean = sheetsService != null

@@ -58,7 +58,7 @@ class SmsReceiver : BroadcastReceiver() {
                 if (parsed != null) {
                     // Auto-categorize
                     val category = CategoryMatcher.getCategory(
-                        app.database, parsed.merchant
+                        app.database, parsed.merchant, parsed.type
                     )
 
                     // Parse succeeded — write TransactionEntity
