@@ -35,6 +35,26 @@ class SheetsSyncWorker(
         private const val ONE_TIME_SYNC_NAME = "oneshot_sheets_sync"
         private const val INTERVAL_MINUTES = 15L
 
+        // Shared with SmsBackfill and CategoryRepair.
+        private const val PREFS_NAME = "buckey_finance_prefs"
+
+        /**
+         * Set once the Sheet has been rebuilt in the current layout (sorted, with
+         * Source and Categorized By). Unset means the next sync rebuilds it: true
+         * on the first run after upgrading, and after [requestRebuild].
+         */
+        private const val PREF_SHEET_REBUILT = "sheet_rebuilt_v4"
+
+        /** SQLite caps bound variables at 999; stay well under it. */
+        private const val ID_CHUNK = 500
+
+        /** Settings -> Rebuild Google Sheet: rebuild on the next sync, starting now. */
+        fun requestRebuild(context: Context) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putBoolean(PREF_SHEET_REBUILT, false).apply()
+            enqueueOneShot(context)
+        }
+
         /**
          * Enqueues periodic sync every 15 minutes with a network constraint.
          * Uses [ExistingPeriodicWorkPolicy.KEEP] to avoid duplicate schedules.
@@ -95,6 +115,16 @@ class SheetsSyncWorker(
             // Ensure headers exist in the sheet
             repository.ensureHeaders()
 
+            val prefs = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (!prefs.getBoolean(PREF_SHEET_REBUILT, false)) {
+                return if (rebuild(database, repository)) {
+                    prefs.edit().putBoolean(PREF_SHEET_REBUILT, true).apply()
+                    Result.success()
+                } else {
+                    Result.retry()
+                }
+            }
+
             // One read of column A serves both the dedup check and the category
             // pass. Null means the read failed; fall back to per-row dedup.
             var rowIndex = repository.fetchRowIndex()
@@ -132,7 +162,11 @@ class SheetsSyncWorker(
             }
 
             // Appends add rows at the bottom, so re-read only if there were any.
-            if (syncedCount > 0) rowIndex = repository.fetchRowIndex()
+            if (syncedCount > 0) {
+                // New rows land at the bottom; one sort puts each at its date.
+                repository.sortByDate()
+                rowIndex = repository.fetchRowIndex()
+            }
             val categoriesOk = rowIndex?.let { syncCategories(database, repository, it) } ?: false
 
             if ((failedCount > 0 && syncedCount == 0) || !categoriesOk) {
@@ -144,6 +178,20 @@ class SheetsSyncWorker(
             Log.e(TAG, "Sync failed: ${e.message}")
             Result.retry()
         }
+    }
+
+    /**
+     * Writes every Room row to the Sheet, oldest first, after the repository
+     * backs up the current tab. Only the rows actually written are marked synced,
+     * so an SMS arriving mid-rebuild is appended by the next sync.
+     */
+    private suspend fun rebuild(database: AppDatabase, repository: GoogleSheetsRepository): Boolean {
+        val dao = database.transactionDao()
+        val rows = dao.getAllOldestFirst()
+        if (!repository.rebuild(rows)) return false
+        rows.map { it.id }.chunked(ID_CHUNK).forEach { dao.markRebuilt(it) }
+        Log.i(TAG, "Sheet rebuilt: ${rows.size} rows, sorted by date")
+        return true
     }
 
     /**

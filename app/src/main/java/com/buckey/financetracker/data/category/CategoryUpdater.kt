@@ -1,6 +1,7 @@
 package com.buckey.financetracker.data.category
 
 import com.buckey.financetracker.data.db.AppDatabase
+import com.buckey.financetracker.data.db.entities.CategorizedBy
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -41,7 +42,7 @@ object CategoryUpdater {
         val dao = database.transactionDao()
         val effective = effectiveScope(transaction, scope)
         if (effective == Scope.THIS_ONLY) {
-            dao.updateCategory(transaction.id, category)
+            dao.updateCategory(transaction.id, category, CategorizedBy.MANUAL)
             return@withContext 1
         }
 
@@ -49,19 +50,25 @@ object CategoryUpdater {
         val pattern = patternFor(transaction.merchant)
         val since = if (effective == Scope.ALL) Long.MIN_VALUE else transaction.date
         val ids = (governedIds(database, pattern, since) + transaction.id).distinct()
-        dao.updateCategoryForIds(ids, category, CategoryMatcher.CREDIT_CATEGORIES, CategoryMatcher.CREDIT_FALLBACK)
+        dao.updateCategoryForIds(
+            ids, category, CategoryMatcher.CREDIT_CATEGORIES, CategoryMatcher.CREDIT_FALLBACK,
+            by = CategorizedBy.MANUAL, protectManual = false
+        )
     }
 
     /**
      * Re-labels every existing row the rule on [pattern] governs. The rule must
      * already be saved. Used by the merchant map import, which writes the user's
-     * rules in bulk. Returns the number of rows set.
+     * rules in bulk, so changed rows are marked [CategorizedBy.DEVELOPMENT]; rows
+     * the user categorized by hand, and rows already right, are skipped. Returns
+     * the number of rows changed.
      */
     suspend fun applyRuleToExisting(database: AppDatabase, pattern: String, category: String): Int =
         withContext(Dispatchers.IO) {
             val ids = governedIds(database, pattern, Long.MIN_VALUE)
             if (ids.isEmpty()) 0 else database.transactionDao().updateCategoryForIds(
-                ids, category, CategoryMatcher.CREDIT_CATEGORIES, CategoryMatcher.CREDIT_FALLBACK
+                ids, category, CategoryMatcher.CREDIT_CATEGORIES, CategoryMatcher.CREDIT_FALLBACK,
+                by = CategorizedBy.DEVELOPMENT, protectManual = true
             )
         }
 

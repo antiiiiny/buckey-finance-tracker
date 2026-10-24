@@ -44,21 +44,24 @@ class SheetCategorySyncTest {
     }
 
     @Test
-    fun `plan targets column H of each row`() {
+    fun `plan targets columns H to J of each row`() {
         val plan = SheetCategorySync.plan(
             SheetCategorySync.indexRows(columnA),
             listOf(tx("aaa", "Groceries"), tx("bbb", "Food"))
         )
 
-        assertEquals(listOf("Transactions!H2", "Transactions!H4"), plan.updates.map { it.range })
-        assertEquals(listOf("Groceries", "Food"), plan.updates.map { it.value })
+        assertEquals(listOf("Transactions!H2:J2", "Transactions!H4:J4"), plan.updates.map { it.range })
+        assertEquals(
+            listOf(listOf("Groceries", "sms", "auto"), listOf("Food", "sms", "auto")),
+            plan.updates.map { it.values }
+        )
         assertTrue(plan.notInSheet.isEmpty())
     }
 
     @Test
     fun `null category is written as Uncategorized, like an append`() {
         val plan = SheetCategorySync.plan(mapOf("aaa" to 2), listOf(tx("aaa", null)))
-        assertEquals("Uncategorized", plan.updates.single().value)
+        assertEquals("Uncategorized", plan.updates.single().values.first())
     }
 
     @Test

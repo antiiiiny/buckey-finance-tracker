@@ -23,7 +23,7 @@ import kotlinx.coroutines.launch
         UnparsedMessageEntity::class,
         CategoryRuleEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -45,7 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     // Real migrations first. The destructive fallback stays only for
                     // versions with no path, so it must never be the route from v2.
-                    .addMigrations(MIGRATION_2_3)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .addCallback(SEED_CALLBACK)
                     .build()
@@ -68,6 +68,20 @@ abstract class AppDatabase : RoomDatabase() {
                     "ALTER TABLE transactions ADD COLUMN category_dirty INTEGER NOT NULL DEFAULT 0"
                 )
                 db.execSQL("UPDATE transactions SET category_dirty = 1 WHERE synced_to_sheets = 1")
+            }
+        }
+
+        /**
+         * v4 adds `transactions.categorized_by` (auto / manual / development),
+         * written to the Sheet beside the category. History before v4 can't be
+         * recovered, so existing rows start as auto; the next rules import marks
+         * what it changes as development, and edits from here on are recorded.
+         */
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE transactions ADD COLUMN categorized_by TEXT NOT NULL DEFAULT 'auto'"
+                )
             }
         }
 
@@ -114,6 +128,9 @@ abstract class AppDatabase : RoomDatabase() {
          * "Uncategorized" and stay visibly pending until a real payee arrives from
          * statement matching (Stage 7). Do not add them back.
          */
+        /** The starter rules' patterns, to tell them from rules added since. */
+        val SEED_PATTERNS: Set<String> by lazy { SEED_CATEGORIES.map { it.merchantPattern }.toSet() }
+
         private val SEED_CATEGORIES = listOf(
             CategoryRuleEntity(merchantPattern = "swiggy", category = "Food"),
             CategoryRuleEntity(merchantPattern = "zomato", category = "Food"),

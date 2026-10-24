@@ -61,7 +61,22 @@ data class TransactionEntity(
     @ColumnInfo(name = "category_dirty", defaultValue = "0")
     val categoryDirty: Boolean = false,
 
+    /**
+     * Who set [category]: [CategorizedBy.AUTO] (a rule, when the row arrived),
+     * [CategorizedBy.MANUAL] (the user, in the app) or [CategorizedBy.DEVELOPMENT]
+     * (a rules-file import). Manual rows are never relabelled by an import.
+     */
+    @ColumnInfo(name = "categorized_by", defaultValue = CategorizedBy.AUTO)
+    val categorizedBy: String = CategorizedBy.AUTO,
+
     /** Epoch millis when this row was created */
     @ColumnInfo(name = "created_at")
     val createdAt: Long = System.currentTimeMillis()
 )
+
+/** Values of [TransactionEntity.categorizedBy]; also written to the Sheet. */
+object CategorizedBy {
+    const val AUTO = "auto"
+    const val MANUAL = "manual"
+    const val DEVELOPMENT = "development"
+}

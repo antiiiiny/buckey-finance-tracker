@@ -30,8 +30,8 @@ JAVA_HOME="/c/Program Files/Android/Android Studio/jbr" "$GRADLE" -p "/c/Antony/
   `app/build`. Ask the user before retrying.
 
 Current suites: `SibParserTest` (15), `UnparsedResolverTest` (13),
-`MerchantMapImporterTest` (19), `CategoryUpdaterTest` (7),
-`SheetCategorySyncTest` (5).
+`MerchantMapImporterTest` (26), `CategoryUpdaterTest` (8), `CategoryMatcherTest` (4),
+`SheetCategorySyncTest` (5), `SheetRowFormatTest` (5). 76 in all.
 
 Unit tests don't prove UI or device behaviour. For that, write steps with the
 `device-verify` skill.
@@ -42,7 +42,7 @@ Unit tests don't prove UI or device behaviour. For that, write steps with the
 cd "/c/Antony/Christ uni/buckey-finance-tracker/reconciliation" && .venv/Scripts/python -m unittest test_reconcile
 ```
 
-69 tests. The PDF tests need `reportlab` (from `requirements-dev.txt`, already
+73 tests. The PDF tests need `reportlab` (from `requirements-dev.txt`, already
 installed in the venv) and skip without it. If a skip count appears, say so rather
 than reporting everything green.
 

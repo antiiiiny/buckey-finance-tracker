@@ -49,6 +49,15 @@ cd reconciliation
   `private/category_rules.json` are included automatically.
 - Then on the phone: **Settings → Import Merchant Map**, then **Sync Now**.
 
+**Changing categories between statements** needs no PDF:
+
+```powershell
+.venv\Scripts\python sib_statement_diff.py --rules-only --push
+```
+
+It sends just `private/category_rules.json`; importing it on the phone relabels
+existing transactions as well as future ones.
+
 What's left behind, in `out/`, is safe to share for review: payee names,
 amounts, dates and RRNs only. No account number, name or address. Long digit
 runs in the file name are masked, and non-UPI rows (interest, charges) carry a

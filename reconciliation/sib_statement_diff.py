@@ -237,6 +237,7 @@ def write_merchant_map(
     pdf_name: str,
     before_capture: Optional[list[StatementRow]] = None,
     rules: Optional[dict] = None,
+    backfill_categorized_by: bool = False,
 ) -> Path:
     """Emit the file the app's Settings -> Import Merchant Map consumes.
 
@@ -273,6 +274,9 @@ def write_merchant_map(
         "rules": rules["rules"],
         "overrides": rules["overrides"],
     }
+    if backfill_categorized_by:
+        # One-off: the app labels rows that predate its categorized_by column.
+        payload["backfill_categorized_by"] = True
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
 
@@ -282,7 +286,17 @@ def build_parser() -> argparse.ArgumentParser:
         prog="sib_statement_diff.py",
         description="Reconcile a SIB PDF statement against the synced Google Sheet.",
     )
-    p.add_argument("pdf", type=Path, help="Path to the SIB PDF statement")
+    p.add_argument(
+        "pdf", type=Path, nargs="?",
+        help="Path to the SIB PDF statement (not needed with --rules-only)",
+    )
+    p.add_argument(
+        "--rules-only",
+        action="store_true",
+        help="Write a merchant map with just the category rules and overrides, "
+        "no statement and no Sheet access. For changing categories between "
+        "statements; combine with --push.",
+    )
     p.add_argument(
         "--inspect",
         action="store_true",
@@ -327,6 +341,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON of category rules and per-transaction overrides to include in "
         "the merchant map (see load_rules). Default: private/category_rules.json "
         "if it exists",
+    )
+    p.add_argument(
+        "--backfill-categorized-by",
+        action="store_true",
+        help="One-off, with --rules-only: have the app label older rows auto / "
+        "manual / development by the rule that categorizes them",
     )
     p.add_argument(
         "--push",
@@ -400,11 +420,44 @@ def read_statement(pdf: Path) -> list[StatementRow]:
         return statement_mod.parse_statement(pdf, password=getpass.getpass("PDF password: "))
 
 
+def rules_only(args: argparse.Namespace) -> int:
+    """Emit a map carrying only the user's rules, for the app to apply on import.
+
+    The importer saves each rule, relabels every existing row the rule governs,
+    then fills rows still Uncategorized, so a category change reaches old
+    transactions without a statement.
+    """
+    rules_path = resolve_rules(args.rules)
+    if rules_path is None:
+        print("No rules file. Pass --rules or create private/category_rules.json.", file=sys.stderr)
+        return 2
+    rules = load_rules(rules_path)
+    empty = Reconciliation(matched=[], sms_only=[], statement_only=[], ambiguous=[], merchant_fixes=[])
+    map_path = write_merchant_map(
+        empty, args.out, "rules-only", [], rules, args.backfill_categorized_by
+    )
+    print(
+        f"Merchant map: {map_path} ({len(rules['rules'])} rules, "
+        f"{len(rules['overrides'])} overrides from {rules_path.name})",
+        file=sys.stderr,
+    )
+    if args.push:
+        print(push_to_phone(map_path), file=sys.stderr)
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.statement_only and (args.apply or args.push):
         parser.error("--statement-only never writes; drop --apply / --push")
+
+    if args.rules_only:
+        if args.pdf is not None or args.apply:
+            parser.error("--rules-only takes no statement and never writes the Sheet")
+        return rules_only(args)
+    if args.pdf is None:
+        parser.error("a statement PDF is required (or pass --rules-only)")
 
     if not args.pdf.exists():
         print(f"No such file: {args.pdf}", file=sys.stderr)

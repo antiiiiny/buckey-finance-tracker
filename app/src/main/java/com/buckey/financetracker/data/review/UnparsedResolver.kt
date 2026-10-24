@@ -6,6 +6,7 @@ import com.buckey.financetracker.data.category.CategoryMatcher
 import com.buckey.financetracker.data.category.GenericMerchant
 import com.buckey.financetracker.data.category.MerchantMemory
 import com.buckey.financetracker.data.db.AppDatabase
+import com.buckey.financetracker.data.db.entities.CategorizedBy
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.db.entities.TransactionType
 import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
@@ -98,7 +99,8 @@ object UnparsedResolver {
     fun buildTransaction(
         message: UnparsedMessageEntity,
         entry: ManualEntry,
-        category: String
+        category: String,
+        categorizedBy: String = CategorizedBy.AUTO
     ): TransactionEntity {
         val errors = validate(entry)
         require(errors.isEmpty()) { errors.joinToString(" ") }
@@ -112,7 +114,8 @@ object UnparsedResolver {
             rawRef = entry.rawRef.trim(),
             senderAddress = message.senderAddress,
             rawBody = message.rawBody,
-            category = category
+            category = category,
+            categorizedBy = categorizedBy
         )
     }
 
@@ -132,7 +135,9 @@ object UnparsedResolver {
         val chosen = entry.category.trim()
         val picked = chosen.ifEmpty { CategoryMatcher.getCategory(database, merchant) }
         val category = entry.type?.let { CategoryMatcher.forType(picked, it) } ?: picked
-        val transaction = buildTransaction(message, entry, category)
+        // A category the user typed is theirs; an empty one came from the rules.
+        val by = if (chosen.isNotEmpty()) CategorizedBy.MANUAL else CategorizedBy.AUTO
+        val transaction = buildTransaction(message, entry, category, by)
 
         val outcome = database.withTransaction {
             val rowId = database.transactionDao().insert(transaction)

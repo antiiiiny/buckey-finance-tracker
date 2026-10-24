@@ -615,6 +615,72 @@ class UnredactedStatementRun(unittest.TestCase):
             sib_statement_diff.main(["x.pdf", "--statement-only", "--push"])
 
 
+class RulesOnlyMap(unittest.TestCase):
+    """Category changes between statements: rules, no PDF, no Sheet."""
+
+    def test_writes_rules_and_nothing_else(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from unittest import mock
+
+        import sib_statement_diff
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = Path(tmp) / "rules.json"
+            rules.write_text('{"rules": [{"pattern": "lulu", "category": "Food"}]}', encoding="utf-8")
+            with mock.patch.object(sheets, "authorize", side_effect=AssertionError("sheet touched")), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                code = sib_statement_diff.main(["--rules-only", "--rules", str(rules), "--out", tmp])
+            payload = json.loads((Path(tmp) / "merchant_map.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["fixes"], [])
+        self.assertEqual(payload["missing"], [])
+        self.assertEqual(payload["rules"], [{"pattern": "lulu", "category": "Food"}])
+
+    def test_backfill_flag_is_opt_in(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+
+        import sib_statement_diff
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = Path(tmp) / "rules.json"
+            rules.write_text('{"rules": []}', encoding="utf-8")
+            out = Path(tmp) / "map.json"
+            with contextlib.redirect_stderr(io.StringIO()):
+                sib_statement_diff.main(["--rules-only", "--rules", str(rules), "--out", tmp])
+                plain = json.loads((Path(tmp) / "merchant_map.json").read_text(encoding="utf-8"))
+                sib_statement_diff.main(
+                    ["--rules-only", "--rules", str(rules), "--out", tmp, "--backfill-categorized-by"]
+                )
+                flagged = json.loads((Path(tmp) / "merchant_map.json").read_text(encoding="utf-8"))
+        self.assertNotIn("backfill_categorized_by", plain)
+        self.assertTrue(flagged["backfill_categorized_by"])
+
+    def test_refuses_a_pdf_or_apply(self):
+        import contextlib
+        import io
+
+        import sib_statement_diff
+
+        for argv in (["x.pdf", "--rules-only"], ["--rules-only", "--apply"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                sib_statement_diff.main(argv)
+
+    def test_pdf_required_otherwise(self):
+        import contextlib
+        import io
+
+        import sib_statement_diff
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            sib_statement_diff.main([])
+
 class EncryptedStatement(unittest.TestCase):
     """Bank-issued statements are usually password-protected."""
 

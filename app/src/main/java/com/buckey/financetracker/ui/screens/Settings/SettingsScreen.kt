@@ -39,6 +39,7 @@ import com.buckey.financetracker.BuildConfig
 import com.buckey.financetracker.data.db.AppDatabase
 import com.buckey.financetracker.data.importer.MerchantMapImporter
 import com.buckey.financetracker.data.sheets.GoogleSignInHelper
+import com.buckey.financetracker.data.sheets.SheetsSyncWorker
 import com.buckey.financetracker.data.sms.SmsBackfill
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -162,6 +163,21 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Import Merchant Map")
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Button(
+                        // Backs up the current tab, then rewrites every row from
+                        // Room in date order (SheetsSyncWorker.rebuild).
+                        onClick = {
+                            SheetsSyncWorker.requestRebuild(context)
+                            importMessage = "Rebuilding the Google Sheet in date order. A backup tab is kept."
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = isSignedIn
+                    ) {
+                        Text("Rebuild Google Sheet")
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))

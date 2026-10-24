@@ -6,6 +6,7 @@ import com.buckey.financetracker.data.category.CategoryUpdater
 import com.buckey.financetracker.data.category.GenericMerchant
 import com.buckey.financetracker.data.category.MerchantMemory
 import com.buckey.financetracker.data.db.AppDatabase
+import com.buckey.financetracker.data.db.entities.CategorizedBy
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.db.entities.TransactionType
 import com.buckey.financetracker.data.sms.TransactionIdGenerator
@@ -97,7 +98,8 @@ object MerchantMapImporter {
         val fixes: List<Fix>,
         val missing: List<Missing> = emptyList(),
         val rules: List<Rule> = emptyList(),
-        val overrides: List<Override> = emptyList()
+        val overrides: List<Override> = emptyList(),
+        val backfillCategorizedBy: Boolean = false
     )
 
     /**
@@ -118,7 +120,8 @@ object MerchantMapImporter {
         val queueResolved: Int = 0,
         val rulesSaved: Int = 0,
         val rowsRecategorized: Int = 0,
-        val overridesApplied: Int = 0
+        val overridesApplied: Int = 0,
+        val categorizedByBackfilled: Int = 0
     ) {
         fun summary(): String {
             val merchants = when {
@@ -137,6 +140,9 @@ object MerchantMapImporter {
             if (rulesSaved > 0 || overridesApplied > 0) {
                 lines += "Saved $rulesSaved category rules; recategorized $rowsRecategorized transactions" +
                     (if (overridesApplied > 0) ", $overridesApplied one-off override(s)" else "") + "."
+            }
+            if (categorizedByBackfilled > 0) {
+                lines += "Labelled who categorized $categorizedByBackfilled older transactions."
             }
             return lines.joinToString("\n")
         }
@@ -198,7 +204,8 @@ object MerchantMapImporter {
             fixes = fixes,
             missing = parseMissing(root),
             rules = parseRules(root),
-            overrides = parseOverrides(root)
+            overrides = parseOverrides(root),
+            backfillCategorizedBy = root.optBoolean("backfill_categorized_by", false)
         )
     }
 
@@ -307,18 +314,21 @@ object MerchantMapImporter {
                     continue
                 }
 
-                // Preserve a category the user chose by hand.
+                // Preserve a category the user chose by hand. A recomputed one is
+                // the rules doing their job on the newly named row: automatic.
                 val current = existing.category
-                val category = if (current.isNullOrBlank() || current == UNCATEGORIZED) {
+                val recompute = current.isNullOrBlank() || current == UNCATEGORIZED
+                val category = if (recompute) {
                     CategoryMatcher.getCategory(database, fix.merchant, existing.type)
                 } else {
-                    current
+                    current!!
                 }
 
                 applied += dao.updateMerchantAndCategory(
                     transactionId = fix.transactionId,
                     merchant = fix.merchant,
-                    category = category
+                    category = category,
+                    by = if (recompute) CategorizedBy.AUTO else existing.categorizedBy
                 )
             }
 
@@ -348,11 +358,16 @@ object MerchantMapImporter {
             // beats a shorter imported one (jj stall) for its own earlier rows,
             // which neither pass above touches. Uncategorized means no decision
             // yet, so filling it never overrides a choice the user made.
+            // Marked development when the winning rule came in with this map,
+            // automatic when it was already on the device.
+            val mapPatterns = map.rules.map { it.pattern }.toSet()
             for (row in dao.getUncategorized()) {
-                if (GenericMerchant.isGeneric(row.merchant)) continue
-                val category = CategoryMatcher.getCategory(database, row.merchant, row.type)
+                if (GenericMerchant.isGeneric(row.merchant) || row.categorizedBy == CategorizedBy.MANUAL) continue
+                val winner = database.categoryDao().findMatch(row.merchant.trim()) ?: continue
+                val category = CategoryMatcher.forType(winner.category, row.type)
                 if (category != UNCATEGORIZED) {
-                    dao.updateCategory(row.id, category)
+                    val by = if (winner.merchantPattern in mapPatterns) CategorizedBy.DEVELOPMENT else CategorizedBy.AUTO
+                    dao.updateCategory(row.id, category, by)
                     rowsRecategorized++
                 }
             }
@@ -361,9 +376,12 @@ object MerchantMapImporter {
             for (override in map.overrides) {
                 overridesApplied += dao.updateCategoryByRawRef(
                     override.rrn, override.category,
-                    CategoryMatcher.CREDIT_CATEGORIES, CategoryMatcher.CREDIT_FALLBACK
+                    CategoryMatcher.CREDIT_CATEGORIES, CategoryMatcher.CREDIT_FALLBACK,
+                    by = CategorizedBy.DEVELOPMENT, protectManual = true
                 )
             }
+
+            val backfilled = if (map.backfillCategorizedBy) backfillCategorizedBy(database, mapPatterns, map.overrides.map { it.rrn }.toSet()) else 0
 
             Log.i(
                 TAG,
@@ -383,9 +401,52 @@ object MerchantMapImporter {
                 queueResolved = queueResolved,
                 rulesSaved = map.rules.size,
                 rowsRecategorized = rowsRecategorized,
-                overridesApplied = overridesApplied
+                overridesApplied = overridesApplied,
+                categorizedByBackfilled = backfilled
             )
         }
+
+    /**
+     * One-off: labels rows that predate `categorized_by` (they all start as auto
+     * after the v4 migration) by the rule that categorizes them today. Sent once,
+     * by `sib_statement_diff.py --rules-only --backfill-categorized-by`.
+     *
+     * - a rule from the user's rules file ([mapPatterns]) -> development
+     * - a starter rule -> auto
+     * - any other rule (written by the category editor), or a category that
+     *   disagrees with its rule -> manual
+     * - no rule (a credit's Transfer fallback) -> stays auto
+     * - a row named by an override in the map -> development
+     *
+     * Returns the number of rows relabelled.
+     */
+    private suspend fun backfillCategorizedBy(
+        database: AppDatabase,
+        mapPatterns: Set<String>,
+        overrideRefs: Set<String>
+    ): Int {
+        val dao = database.transactionDao()
+        var relabelled = 0
+        for (row in dao.getCategorizedAuto()) {
+            if (row.rawRef in overrideRefs) {
+                dao.setCategorizedBy(row.id, CategorizedBy.DEVELOPMENT)
+                relabelled++
+                continue
+            }
+            val winner = database.categoryDao().findMatch(row.merchant.trim()) ?: continue
+            val by = when {
+                CategoryMatcher.forType(winner.category, row.type) != row.category -> CategorizedBy.MANUAL
+                winner.merchantPattern in mapPatterns -> CategorizedBy.DEVELOPMENT
+                winner.merchantPattern in AppDatabase.SEED_PATTERNS -> CategorizedBy.AUTO
+                else -> CategorizedBy.MANUAL
+            }
+            if (by != CategorizedBy.AUTO) {
+                dao.setCategorizedBy(row.id, by)
+                relabelled++
+            }
+        }
+        return relabelled
+    }
 
     private suspend fun Missing.toEntity(database: AppDatabase): TransactionEntity {
         val millis = date.atTime(12, 0).atZone(IST).toInstant().toEpochMilli()

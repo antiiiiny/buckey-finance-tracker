@@ -294,6 +294,13 @@ class MerchantMapImporterTest {
     }
 
     @Test
+    fun `categorized-by backfill is opt in`() {
+        assertTrue(!MerchantMapImporter.parse(fullMap()).backfillCategorizedBy)
+        val flagged = fullMap().replace("\"schema\": 1,", "\"schema\": 1, \"backfill_categorized_by\": true,")
+        assertTrue(MerchantMapImporter.parse(flagged).backfillCategorizedBy)
+    }
+
+    @Test
     fun `summary reports rules and overrides`() {
         val summary = MerchantMapImporter.ImportResult(
             rulesSaved = 50, rowsRecategorized = 140, overridesApplied = 1

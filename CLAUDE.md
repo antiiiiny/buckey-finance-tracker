@@ -47,7 +47,7 @@ Key files:
 - `data/sms/SmsReceiver.kt` — live capture + full pipeline, the real orchestrator
 - `data/sms/SmsBackfill.kt` — historical capture, parallel copy of the same logic
 - `data/parser/banks/SibParser.kt` — the only parser
-- `data/db/AppDatabase.kt` — 3 entities, v3 (`MIGRATION_2_3` adds `category_dirty`), seeded with 22 category rules
+- `data/db/AppDatabase.kt` — 3 entities, v4 (`MIGRATION_2_3` adds `category_dirty`, `MIGRATION_3_4` adds `categorized_by`), seeded with 22 category rules
 - `data/sheets/SheetsSyncWorker.kt` — the only network caller
 - `data/importer/MerchantMapImporter.kt` — applies the Stage 7 merchant map to Room
 - `data/review/UnparsedResolver.kt` — Stage 6: manual entry → `TransactionEntity`
@@ -159,6 +159,18 @@ Abel; money *from* Abel is Transfer. Income comes from explicit rules only
 Credit SMS truncate the payer to 8 characters ("JOY JOHN", "RHEA GRA"), so
 credit rules must match the truncated form.
 
+**The Sheet is kept in date order, with two extra columns.** Layout lives in
+`SheetRowFormat`: A–H as before, then **I Source** (`sms` / `bank_statement`, from
+`sender_address`) and **J Categorized By** (`transactions.categorized_by`:
+`auto` = a rule when the row arrived, `manual` = the user in the app,
+`development` = a rules-file import). Imports never relabel a manual row, and
+only mark rows whose category actually changes, so `auto` keeps meaning "the
+rules got it right on arrival". After appending, the sync sorts the tab by the
+Date column. The first sync on DB v4 (`MIGRATION_3_4`) rebuilds the whole tab
+from Room — backup tab first — and Settings → Rebuild Google Sheet repeats that.
+`--rules-only --backfill-categorized-by` (one-off) labels pre-v4 rows by the rule
+that categorizes them.
+
 **Sheet categories follow Room.** Every DAO write to `category` sets
 `category_dirty`. After appending, `SheetsSyncWorker` reads column A once,
 then rewrites column H of dirty synced rows in one batch (`SheetCategorySync`),
@@ -222,7 +234,7 @@ on `SEED_CATEGORIES` in `AppDatabase.kt` for why, and do not re-add them.
 |---|---|
 | 0 Project setup | Done. AGP 8.7.3, Kotlin 2.0.21, Gradle 8.9, KSP, compileSdk 35, minSdk 26. |
 | 1 SMS capture | Done, verified on-device. Backfill blocked on Android 14+ by design. |
-| 2 Local storage | Done. 3 entities, 3 DAOs, `AppDatabase` v3 (migration from v2; never rely on the destructive fallback). |
+| 2 Local storage | Done. 3 entities, 3 DAOs, `AppDatabase` v4 (real migrations from v2; never rely on the destructive fallback). |
 | 3 Parsing | Done for UPI debit/credit only. 15 passing unit tests. See limits above. |
 | 4 Categorization | Done, but only reaches credits. Debits have no payee to match on and land as "Uncategorized" by design. |
 | 5 Sheets sync | Done and working. Deviations: sheet ID is baked in at build time from `secrets.properties` into `BuildConfig.GOOGLE_SHEET_ID` rather than user-entered; sync interval is 15 min, not the 6 h the spec suggests. |

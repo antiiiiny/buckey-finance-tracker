@@ -56,7 +56,7 @@ import java.util.Locale
 /** Categories offered in every category picker in the app. */
 internal val PRESET_CATEGORIES = listOf(
     "Food", "Transport", "Shopping", "Groceries", "Utilities",
-    "Housing", "Room", "Income", "Transfer", "Self Transfer", "Entertainment",
+    "Housing", "Home", "Room", "Income", "Transfer", "Self Transfer", "Entertainment",
     "Health", "Education", "College", "Scooter", "Travel", "Bills",
     "SMS Charges", "Miscellaneous", "Other", "Uncategorized"
 )

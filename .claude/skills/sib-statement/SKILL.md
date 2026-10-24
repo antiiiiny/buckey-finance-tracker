@@ -27,6 +27,10 @@ from its outputs only:
 - `out/merchant_map.json`: fixes, missing rows, rules.
 - The phone's database over adb, after the user imports and syncs.
 
+When the user gives new name -> category mappings between statements, add them to
+`private/category_rules.json` and run `sib_statement_diff.py --rules-only --push`
+yourself: no PDF and no Sheet access needed. The user then imports on the phone.
+
 If the run failed on the PDF itself (balance failures, no rows, a new layout),
 ask the user for a redacted copy to tune against. Don't ask for the unredacted
 one.
