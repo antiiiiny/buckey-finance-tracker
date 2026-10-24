@@ -1,261 +1,342 @@
 package com.buckey.financetracker.ui.screens.Settings
 
 import android.Manifest
-import android.content.Context
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
-import android.util.Log
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.buckey.financetracker.BuildConfig
 import com.buckey.financetracker.data.db.AppDatabase
-import com.buckey.financetracker.data.importer.MerchantMapImporter
-import com.buckey.financetracker.data.sheets.GoogleSignInHelper
 import com.buckey.financetracker.data.sheets.SheetsSyncWorker
 import com.buckey.financetracker.data.sms.SmsBackfill
+import com.buckey.financetracker.data.summary.NetMode
+import com.buckey.financetracker.data.summary.HomePreferences
+import com.buckey.financetracker.data.summary.SpentMode
+import com.buckey.financetracker.ui.components.PreviewSurface
+import com.buckey.financetracker.ui.components.ThemePreviews
+import com.buckey.financetracker.ui.components.rememberMerchantMapImport
+import com.buckey.financetracker.ui.theme.Spacing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val MERCHANT_MAP_MIME_TYPES = arrayOf(
-    "application/json",
-    "text/plain",
-    "application/octet-stream"
+/** The Sheet link; the ID is appended at runtime from BuildConfig. */
+private const val SHEET_URL_PREFIX = "https://docs.google.com/spreadsheets/d/"
+
+/** What Settings shows; built by [SettingsScreen], faked in previews. */
+data class SettingsState(
+    val isSignedIn: Boolean,
+    val syncedCount: Int,
+    val unsyncedCount: Int,
+    val netMode: NetMode,
+    val spentMode: SpentMode,
+    val smsPermissionGranted: Boolean,
+    val sheetConfigured: Boolean,
+    val message: String?,
+    val showClearDialog: Boolean
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** Everything Settings can do. */
+data class SettingsActions(
+    val onSignIn: () -> Unit = {},
+    val onSignOut: () -> Unit = {},
+    val onSyncNow: () -> Unit = {},
+    val onNetModeChange: (NetMode) -> Unit = {},
+    val onSpentModeChange: (SpentMode) -> Unit = {},
+    val onOpenSheet: () -> Unit = {},
+    val onImportMerchantMap: () -> Unit = {},
+    val onRebuildSheet: () -> Unit = {},
+    val onRunBackfill: () -> Unit = {},
+    val onClearRequest: () -> Unit = {},
+    val onClearConfirm: () -> Unit = {},
+    val onClearDismiss: () -> Unit = {}
+)
+
+/**
+ * Settings, which since the 2026-10-24 redesign also holds Google Sheets sync
+ * (the old Sync tab), "Open in Google Sheets", and the home screen's "Net shows"
+ * and "Spent shows" choices.
+ */
 @Composable
 fun SettingsScreen(
     database: AppDatabase,
-    context: Context
+    isSignedIn: Boolean,
+    onSignIn: () -> Unit,
+    onSignOut: () -> Unit
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var showClearDataDialog by remember { mutableStateOf(false) }
-    var backfillMessage by remember { mutableStateOf<String?>(null) }
-    var importMessage by remember { mutableStateOf<String?>(null) }
+    val transactions by database.transactionDao().getAllTransactions()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
 
-    // Storage Access Framework: the user picks merchant_map.json themselves, so
-    // no storage permission is needed (rule 11 caps what this app may request).
-    val importMerchantMap = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        importMessage = "Importing…"
-        scope.launch {
-            importMessage = try {
-                val json = withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.use { stream ->
-                        stream.bufferedReader().readText()
+    var netMode by remember { mutableStateOf(HomePreferences.netMode(context)) }
+    var spentMode by remember { mutableStateOf(HomePreferences.spentMode(context)) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var showClearDialog by remember { mutableStateOf(false) }
+
+    val importMerchantMap = rememberMerchantMapImport(database) { message = it }
+
+    val state = SettingsState(
+        isSignedIn = isSignedIn,
+        syncedCount = transactions.count { it.syncedToSheets },
+        unsyncedCount = transactions.count { !it.syncedToSheets },
+        netMode = netMode,
+        spentMode = spentMode,
+        smsPermissionGranted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECEIVE_SMS
+        ) == PackageManager.PERMISSION_GRANTED,
+        sheetConfigured = BuildConfig.GOOGLE_SHEET_ID.isNotEmpty(),
+        message = message,
+        showClearDialog = showClearDialog
+    )
+
+    SettingsContent(
+        state = state,
+        actions = SettingsActions(
+            onSignIn = onSignIn,
+            onSignOut = onSignOut,
+            onSyncNow = {
+                SheetsSyncWorker.enqueueOneShot(context)
+                message = "Sync started."
+            },
+            onNetModeChange = {
+                HomePreferences.setNetMode(context, it)
+                netMode = it
+            },
+            onSpentModeChange = {
+                HomePreferences.setSpentMode(context, it)
+                spentMode = it
+            },
+            onOpenSheet = {
+                // Hands the link to the Sheets app or the browser; the app itself
+                // makes no request. The ID comes from secrets.properties via
+                // BuildConfig and is never written into source.
+                val uri = Uri.parse(SHEET_URL_PREFIX + BuildConfig.GOOGLE_SHEET_ID)
+                try {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                } catch (e: ActivityNotFoundException) {
+                    message = "No app on this phone can open a Google Sheets link."
+                }
+            },
+            onImportMerchantMap = importMerchantMap,
+            onRebuildSheet = {
+                // Backs up the current tab, then rewrites every row from Room in
+                // date order (SheetsSyncWorker.rebuild).
+                SheetsSyncWorker.requestRebuild(context)
+                message = "Rebuilding the Google Sheet in date order. A backup tab is kept."
+            },
+            onRunBackfill = {
+                scope.launch {
+                    val count = SmsBackfill.runBackfill(context)
+                    message = "Backfill complete: $count messages processed"
+                }
+            },
+            onClearRequest = { showClearDialog = true },
+            onClearConfirm = {
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        database.transactionDao().deleteAll()
+                        database.categoryDao().deleteAll()
+                        database.unparsedMessageDao().deleteAll()
+                        // Seeding only runs on database creation, so the starter
+                        // rules have to be restored by hand here.
+                        AppDatabase.seedDefaultCategories(database)
                     }
-                } ?: throw IllegalStateException("Could not open the selected file.")
+                    showClearDialog = false
+                }
+            },
+            onClearDismiss = { showClearDialog = false }
+        )
+    )
+}
 
-                MerchantMapImporter.import(database, json).summary()
-            } catch (e: MerchantMapImporter.InvalidMapException) {
-                "Import failed: ${e.message}"
-            } catch (e: Exception) {
-                Log.e("SettingsScreen", "Merchant map import failed", e)
-                "Import failed: ${e.message ?: e.javaClass.simpleName}"
-            }
-        }
-    }
-
-    val smsPermissionGranted = ContextCompat.checkSelfPermission(
-        context, Manifest.permission.RECEIVE_SMS
-    ) == PackageManager.PERMISSION_GRANTED
-
-    val isSignedIn = GoogleSignInHelper.isSignedIn(context)
-
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsContent(state: SettingsState, actions: SettingsActions) {
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Settings") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            )
-        }
-    ) { padding ->
+        topBar = { TopAppBar(title = { Text("Settings") }) }
+    ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+            verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {
-            // App info card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(1.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+            Section("Google Sheets sync") {
+                Text(
+                    text = if (state.isSignedIn) "Signed in" else "Not signed in",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (state.isSignedIn) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.error
+                )
+                Text(
+                    text = "${state.syncedCount} synced · ${state.unsyncedCount} waiting",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!state.isSignedIn) {
                     Text(
-                        text = "App Info",
-                        style = MaterialTheme.typography.titleMedium
+                        text = "Sign in with Google to sync your transactions to the configured " +
+                            "Google Sheet. Sync runs every 15 minutes when signed in.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    InfoRow("Version", "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-                    InfoRow("SMS Permission", if (smsPermissionGranted) "Granted" else "Not granted")
-                    InfoRow("Google Account", if (isSignedIn) "Signed in" else "Not signed in")
-                    InfoRow("Google Sheet ID", BuildConfig.GOOGLE_SHEET_ID.ifEmpty { "Not configured" })
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                    Button(onClick = actions.onSyncNow, enabled = state.isSignedIn) {
+                        Text("Sync now")
+                    }
+                    OutlinedButton(onClick = if (state.isSignedIn) actions.onSignOut else actions.onSignIn) {
+                        Text(if (state.isSignedIn) "Sign out" else "Sign in with Google")
+                    }
+                }
+                OutlinedButton(
+                    onClick = actions.onOpenSheet,
+                    enabled = state.sheetConfigured,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Open in Google Sheets")
                 }
             }
 
-            // Actions card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(1.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Actions",
-                        style = MaterialTheme.typography.titleMedium
+            Section("Home") {
+                Text(
+                    text = "Net shows",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Column(modifier = Modifier.selectableGroup()) {
+                    ChoiceOption(
+                        title = "Running balance",
+                        detail = "Your account balance, checked against SIB SMS",
+                        selected = state.netMode == NetMode.RUNNING_BALANCE,
+                        onSelect = { actions.onNetModeChange(NetMode.RUNNING_BALANCE) }
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                val count = SmsBackfill.runBackfill(context)
-                                backfillMessage = "Backfill complete: $count messages processed"
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Re-run SMS Backfill")
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Button(
-                        // Some document providers report .json as octet-stream or
-                        // plain text; filtering on application/json alone can make
-                        // the file unselectable.
-                        onClick = { importMerchantMap.launch(MERCHANT_MAP_MIME_TYPES) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Import Merchant Map")
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Button(
-                        // Backs up the current tab, then rewrites every row from
-                        // Room in date order (SheetsSyncWorker.rebuild).
-                        onClick = {
-                            SheetsSyncWorker.requestRebuild(context)
-                            importMessage = "Rebuilding the Google Sheet in date order. A backup tab is kept."
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = isSignedIn
-                    ) {
-                        Text("Rebuild Google Sheet")
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Button(
-                        onClick = { showClearDataDialog = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Text("Clear All Data")
-                    }
+                    ChoiceOption(
+                        title = "This month's net",
+                        detail = "Credits minus debits in the selected month",
+                        selected = state.netMode == NetMode.THIS_MONTH,
+                        onSelect = { actions.onNetModeChange(NetMode.THIS_MONTH) }
+                    )
+                }
+                Text(
+                    text = "Spent shows",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = Spacing.sm)
+                )
+                Column(modifier = Modifier.selectableGroup()) {
+                    ChoiceOption(
+                        title = "Debits minus transfers",
+                        detail = "Leaves out Transfer debits and subtracts money paid back to you",
+                        selected = state.spentMode == SpentMode.AFTER_TRANSFERS,
+                        onSelect = { actions.onSpentModeChange(SpentMode.AFTER_TRANSFERS) }
+                    )
+                    ChoiceOption(
+                        title = "Total spent",
+                        detail = "Every debit, transfers included",
+                        selected = state.spentMode == SpentMode.TOTAL,
+                        onSelect = { actions.onSpentModeChange(SpentMode.TOTAL) }
+                    )
                 }
             }
 
-            // Backfill message
-            backfillMessage?.let {
+            Section("Data") {
+                OutlinedButton(onClick = actions.onImportMerchantMap, modifier = Modifier.fillMaxWidth()) {
+                    Text("Import merchant map")
+                }
+                OutlinedButton(
+                    onClick = actions.onRebuildSheet,
+                    enabled = state.isSignedIn,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Rebuild Google Sheet")
+                }
+                OutlinedButton(onClick = actions.onRunBackfill, modifier = Modifier.fillMaxWidth()) {
+                    Text("Re-run SMS backfill")
+                }
+                TextButton(onClick = actions.onClearRequest, modifier = Modifier.fillMaxWidth()) {
+                    Text("Clear all data", color = MaterialTheme.colorScheme.error)
+                }
+            }
+
+            state.message?.let {
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = if (it.startsWith("Import failed")) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary
                 )
             }
 
-            // Merchant map import result
-            importMessage?.let {
+            Section("About") {
+                InfoRow("Version", "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+                InfoRow("SMS permission", if (state.smsPermissionGranted) "Granted" else "Not granted")
+                InfoRow("Google Sheet", if (state.sheetConfigured) "Configured" else "Not configured")
                 Text(
-                    text = it,
+                    text = "No data leaves your device except to Google Sheets.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (it.startsWith("Import failed"))
-                        MaterialTheme.colorScheme.error
-                    else
-                        MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-
-            // Version info
-            Text(
-                text = "Buckey Finance Tracker\nNo data leaves your device except to Google Sheets.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
 
-        // Clear data confirmation dialog
-        if (showClearDataDialog) {
+        if (state.showClearDialog) {
             AlertDialog(
-                onDismissRequest = { showClearDataDialog = false },
-                title = { Text("Clear All Data?") },
+                onDismissRequest = actions.onClearDismiss,
+                title = { Text("Clear all data?") },
                 text = {
-                    Text("This will delete all transactions and unparsed messages " +
-                            "from the local database, and reset category rules to " +
-                            "the defaults. This cannot be undone.")
+                    Text(
+                        "This will delete all transactions and unparsed messages from the " +
+                            "local database, and reset category rules to the defaults. This " +
+                            "cannot be undone."
+                    )
                 },
                 confirmButton = {
-                    TextButton(
-                        onClick = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    database.transactionDao().deleteAll()
-                                    database.categoryDao().deleteAll()
-                                    database.unparsedMessageDao().deleteAll()
-                                    // Seeding only runs on database creation, so the
-                                    // starter rules have to be restored by hand here.
-                                    AppDatabase.seedDefaultCategories(database)
-                                }
-                                showClearDataDialog = false
-                            }
-                        }
-                    ) {
+                    TextButton(onClick = actions.onClearConfirm) {
                         Text("Clear", color = MaterialTheme.colorScheme.error)
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showClearDataDialog = false }) {
-                        Text("Cancel")
-                    }
+                    TextButton(onClick = actions.onClearDismiss) { Text("Cancel") }
                 }
             )
         }
@@ -263,16 +344,87 @@ fun SettingsScreen(
 }
 
 @Composable
+private fun Section(title: String, content: @Composable () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier
+                .padding(top = Spacing.sm)
+                .semantics { heading() }
+        )
+        content()
+    }
+}
+
+@Composable
+private fun ChoiceOption(title: String, detail: String, selected: Boolean, onSelect: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, onClick = onSelect, role = Role.RadioButton)
+            .minimumInteractiveComponentSize(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // The row handles the click, so the button itself takes none.
+        RadioButton(selected = selected, onClick = null)
+        Column(modifier = Modifier.padding(start = Spacing.md)) {
+            Text(text = title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
 private fun InfoRow(label: String, value: String) {
-    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+    Row(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
         )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium
+        Text(text = value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+// ==================== Previews (fake data only) ====================
+
+private val previewState = SettingsState(
+    isSignedIn = true,
+    syncedCount = 120,
+    unsyncedCount = 0,
+    netMode = NetMode.RUNNING_BALANCE,
+    spentMode = SpentMode.AFTER_TRANSFERS,
+    smsPermissionGranted = true,
+    sheetConfigured = true,
+    message = null,
+    showClearDialog = false
+)
+
+@ThemePreviews
+@Composable
+private fun SettingsSignedInPreview() {
+    PreviewSurface { SettingsContent(previewState, SettingsActions()) }
+}
+
+@ThemePreviews
+@Composable
+private fun SettingsErrorPreview() {
+    PreviewSurface {
+        SettingsContent(
+            previewState.copy(
+                isSignedIn = false,
+                unsyncedCount = 12,
+                netMode = NetMode.THIS_MONTH,
+                message = "Import failed: not a merchant map"
+            ),
+            SettingsActions()
         )
     }
 }

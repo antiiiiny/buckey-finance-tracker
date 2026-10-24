@@ -321,14 +321,41 @@ order; Source 319 bank_statement / 268 sms; Categorized By 435 development /
 88 manual / 64 auto; 0 unsynced, 0 dirty, 0 credits outside Income/Transfer.
 A second statement categorized 113 of 147 debits (77%) automatically.
 
-Tests: 76 Kotlin (SibParser 15, UnparsedResolver 13, MerchantMapImporter 26,
-CategoryUpdater 8, CategoryMatcher 4, SheetCategorySync 5, SheetRowFormat 5)
-and 73 Python.
+Tests at the end of Stage 7: 76 Kotlin and 73 Python.
+
+## UI redesign (2026-10-24) — built, not yet verified on device
+
+Design interview → approved brief and mockups (`.github/design/home-screen.md`),
+then built:
+
+- **Home** replaces the transaction list: Spent this month and Net side by side.
+  Spent is debits minus Transfer debits minus Transfer credits (repayments) by
+  default, or every debit (Settings → Spent shows). Net is a running balance
+  (earliest SMS balance + every later row) by default, or the month's net
+  (Settings → Net shows). Tapping Net opens a sheet that checks it against the
+  latest SMS balance. "Buckey" label over the month picker; rows grouped by day
+  or month (⋮, current choice ticked); "N to categorize" filter; sync-error
+  banner; first-run welcome.
+- **Pending** tab = the Review queue plus uncategorized transactions, laid out
+  like Home: two counts on top, headed sections, uncategorized rows by day.
+- **Settings** holds Sync (old tab) and "Open in Google Sheets" (link built from
+  `BuildConfig.GOOGLE_SHEET_ID`). Bottom bar: Home · Pending · Settings.
+- Own palette (neutral + deep green, dynamic color off), 4-size type scale,
+  spacing tokens, `enableEdgeToEdge()`. UI rules and the intake rule in CLAUDE.md;
+  `frontend-design` and `edge-to-edge` skills in `.claude/skills/`.
+- `SibParser.parseBalance` reads the balance from the stored SMS (no migration).
+  On the device data the running balance matched the latest SMS balance exactly.
+
+Tests: 102 Kotlin (SibParser 20, UnparsedResolver 13, MerchantMapImporter 26,
+CategoryUpdater 8, CategoryMatcher 4, SheetCategorySync 5, SheetRowFormat 5,
+BalanceCalculator 7, MonthSummary 9, Format 5) and 73 Python.
 
 ## What's left
 
+- **Verify the UI redesign on the Pixel 9a.** Then bring `CategoryEditorScreen`
+  and `ResolveMessageScreen` in line with the UI rules.
 - **PDF statement straight into the app**, replacing the desktop script.
-- **Autopay / e-mandate** messages (currently dismissed from the Review queue).
+- **Autopay / e-mandate** messages (currently dismissed from the Pending tab).
 - **More SIB SMS formats:** ATM, POS/card, NEFT/IMPS/RTGS, failed/reversed, and
   the one queued UTIB credit whose payee has a character outside `[\w\s]`.
 - Stage 6 optional: flag repeated unparsed patterns per sender.

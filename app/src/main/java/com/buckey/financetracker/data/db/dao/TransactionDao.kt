@@ -174,6 +174,13 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE category IS NULL OR category = 'Uncategorized'")
     suspend fun getUncategorized(): List<TransactionEntity>
 
+    /** [getUncategorized] as a live list, newest first, for the Pending tab. */
+    @Query(
+        "SELECT * FROM transactions WHERE category IS NULL OR category = 'Uncategorized' " +
+            "ORDER BY date DESC"
+    )
+    fun observeUncategorized(): Flow<List<TransactionEntity>>
+
     /** Synced rows whose Sheet Category cells are stale. */
     @Query("SELECT * FROM transactions WHERE synced_to_sheets = 1 AND category_dirty = 1")
     suspend fun getCategoryDirty(): List<TransactionEntity>

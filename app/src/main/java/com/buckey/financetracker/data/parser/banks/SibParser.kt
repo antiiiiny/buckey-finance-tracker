@@ -80,6 +80,24 @@ object SibParser : TransactionParser {
         return null
     }
 
+    // Debit: "... RRN:620896250xxxx. Bal:Rs.755.99 ..."
+    // Credit: "... on 27-07-26 20:43:01.Final balance is Rs.756.99 -South Indian Bank"
+    // Every SMS-backed row on the user's device matched one of these
+    // (2026-10-24: 195 debits, 73 credits), always with plain digits.
+    private val balancePattern = Regex(
+        """(?:Bal:|Final balance is )\s*Rs\.\s*(\d+(?:\.\d+)?)""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * The account balance SIB quotes after the transaction, or null if the SMS
+     * has none. Read from the stored `raw_body` for the home screen's running
+     * balance and its verification, so no column or migration is needed. Like
+     * [parse] it never throws, and the body is never logged (rule 12).
+     */
+    fun parseBalance(rawBody: String): Double? =
+        balancePattern.find(rawBody)?.groupValues?.get(1)?.toDoubleOrNull()
+
     private fun parseDate(dateString: String): Instant? {
         return try {
             val localDateTime = LocalDateTime.parse(dateString, dateFormatter)

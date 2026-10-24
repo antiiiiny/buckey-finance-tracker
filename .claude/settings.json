@@ -1,5 +1,11 @@
 {
   "env": {
     "JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr"
+  },
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)"
+    ]
   }
 }

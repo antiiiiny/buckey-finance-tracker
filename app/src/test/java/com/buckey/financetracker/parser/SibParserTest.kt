@@ -174,4 +174,38 @@ class SibParserTest {
 
         assertNull(result)
     }
+
+    // ==================== BALANCE TESTS ====================
+
+    @Test
+    fun `balance - debit Bal field`() {
+        val sms = "UPI debit:Rs.1.00,A/c X6825, 27-07-26 20:11:44 RRN:620896250123. Bal:Rs.755.99 Block A/c?Call18004251809/SMS BLK<A/c>to 9840777222-South Indian Bank"
+        assertEquals(755.99, SibParser.parseBalance(sms)!!, 0.001)
+    }
+
+    @Test
+    fun `balance - credit Final balance field`() {
+        val sms = "UPI Credit:INR Rs.1.00 in A/c X6825. Info:UPI/SIBL/110306661234/LEO STEV on 27-07-26 20:43:01.Final balance is Rs.756.99 -South Indian Bank"
+        assertEquals(756.99, SibParser.parseBalance(sms)!!, 0.001)
+    }
+
+    @Test
+    fun `balance - five digit balance`() {
+        val sms = "UPI Credit:INR Rs.50000.00 in A/c X4321. Info:UPI/SIBL/998877665544/ACME CORP on 27-07-26 00:00:01.Final balance is Rs.75000.00 -South Indian Bank"
+        assertEquals(75000.00, SibParser.parseBalance(sms)!!, 0.001)
+    }
+
+    @Test
+    fun `balance - non-UPI SMS with Bal field`() {
+        // A hand-resolved row keeps its source SMS, which may be another template.
+        val sms = "Rs.2000.00 withdrawn at ATM from A/c X6825 on 27-07-26. Bal:Rs.755.99"
+        assertEquals(755.99, SibParser.parseBalance(sms)!!, 0.001)
+    }
+
+    @Test
+    fun `balance - none when the field is missing or unreadable`() {
+        assertNull(SibParser.parseBalance(""))
+        assertNull(SibParser.parseBalance("UPI debit:Rs.100.00,A/c X6825, 27-07-26 20:11:44 RRN:123456789012. Bal:..."))
+        assertNull(SibParser.parseBalance("Your OTP for transaction is 123456. Do not share."))
+    }
 }

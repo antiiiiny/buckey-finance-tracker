@@ -19,8 +19,9 @@ app/
     sheets/      GoogleSheetsRepository.kt, SheetsSyncWorker.kt, SheetRowFormat.kt, SheetCategorySync.kt
     review/      UnparsedResolver.kt
     importer/    MerchantMapImporter.kt
-  ui/            screens/TransactionList, screens/CategoryEditor, screens/SyncStatus, screens/Settings,
-                 screens/ReviewQueue, screens/ResolveMessage
+    summary/     BalanceCalculator.kt, MonthSummary.kt, HomePreferences.kt
+  ui/            screens/Home, screens/Pending, screens/Settings, screens/CategoryEditor,
+                 screens/ResolveMessage; components/, format/, theme/
 reconciliation/   sib_statement_diff.py  (separate Python script, not part of the app build)
 ```
 There is no `domain/` layer: the use-case placeholders were never filled and were

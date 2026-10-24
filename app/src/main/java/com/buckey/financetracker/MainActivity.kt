@@ -3,29 +3,32 @@ package com.buckey.financetracker
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.List
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -37,13 +40,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.buckey.financetracker.data.category.CategoryRepair
@@ -51,12 +54,12 @@ import com.buckey.financetracker.data.sheets.GoogleSignInHelper
 import com.buckey.financetracker.data.sheets.SheetsSyncWorker
 import com.buckey.financetracker.data.sms.SmsBackfill
 import com.buckey.financetracker.ui.screens.CategoryEditor.CategoryEditorScreen
+import com.buckey.financetracker.ui.screens.Home.HomeScreen
+import com.buckey.financetracker.ui.screens.Pending.PendingScreen
 import com.buckey.financetracker.ui.screens.ResolveMessage.ResolveMessageScreen
-import com.buckey.financetracker.ui.screens.ReviewQueue.ReviewQueueScreen
 import com.buckey.financetracker.ui.screens.Settings.SettingsScreen
-import com.buckey.financetracker.ui.screens.SyncStatus.SyncStatusScreen
-import com.buckey.financetracker.ui.screens.TransactionList.TransactionListScreen
 import com.buckey.financetracker.ui.theme.FinanceTrackerTheme
+import com.buckey.financetracker.ui.theme.Spacing
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.common.api.ApiException
 import kotlinx.coroutines.launch
@@ -66,6 +69,11 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val RC_SIGN_IN = 9001
+
+        // The three tabs (redesign, 2026-10-24). Sync status lives in Settings.
+        private const val ROUTE_HOME = "home"
+        private const val ROUTE_PENDING = "pending"
+        private const val ROUTE_SETTINGS = "settings"
     }
 
     private var smsPermissionGranted by mutableStateOf(false)
@@ -101,7 +109,15 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Draw behind the system bars (edge-to-edge skill). ComponentActivity's
+        // version also picks light or dark bar icons from the theme.
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Otherwise three-button navigation gets a translucent scrim over the
+        // bottom bar's color.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
 
         // Check if SMS permissions are already granted
         smsPermissionGranted = ContextCompat.checkSelfPermission(
@@ -135,70 +151,53 @@ class MainActivity : ComponentActivity() {
                         )
                     } else {
                         val navController = rememberNavController()
-                        var selectedTab by remember { mutableStateOf(0) }
+                        val backStackEntry by navController.currentBackStackEntryAsState()
+                        val currentRoute = backStackEntry?.destination?.route
                         val unresolvedMessages by database.unparsedMessageDao()
                             .getUnresolvedMessages()
                             .collectAsStateWithLifecycle(initialValue = emptyList())
+                        val uncategorized by database.transactionDao()
+                            .observeUncategorized()
+                            .collectAsStateWithLifecycle(initialValue = emptyList())
+                        val pendingCount = unresolvedMessages.size + uncategorized.size
+
+                        // Tabs pop back to Home, so Back from any tab lands there.
+                        fun openTab(route: String) {
+                            navController.navigate(route) {
+                                popUpTo(ROUTE_HOME) { inclusive = route == ROUTE_HOME }
+                                launchSingleTop = true
+                            }
+                        }
 
                         Scaffold(
                             bottomBar = {
-                                BottomAppBar {
+                                NavigationBar {
                                     NavigationBarItem(
-                                        selected = selectedTab == 0,
-                                        onClick = {
-                                            selectedTab = 0
-                                            navController.navigate("transaction_list") {
-                                                popUpTo("transaction_list") { inclusive = true }
-                                                launchSingleTop = true
-                                            }
-                                        },
-                                        icon = { Icon(Icons.Default.List, contentDescription = "Transactions") },
-                                        label = { Text("Transactions") }
+                                        selected = currentRoute == ROUTE_HOME,
+                                        onClick = { openTab(ROUTE_HOME) },
+                                        icon = { Icon(Icons.Outlined.Home, contentDescription = null) },
+                                        label = { Text("Home") }
                                     )
                                     NavigationBarItem(
-                                        selected = selectedTab == 3,
-                                        onClick = {
-                                            selectedTab = 3
-                                            navController.navigate("review_queue") {
-                                                popUpTo("transaction_list") { inclusive = false }
-                                                launchSingleTop = true
-                                            }
-                                        },
+                                        selected = currentRoute == ROUTE_PENDING,
+                                        onClick = { openTab(ROUTE_PENDING) },
                                         icon = {
                                             BadgedBox(
                                                 badge = {
-                                                    if (unresolvedMessages.isNotEmpty()) {
-                                                        Badge { Text("${unresolvedMessages.size}") }
+                                                    if (pendingCount > 0) {
+                                                        Badge { Text("$pendingCount") }
                                                     }
                                                 }
                                             ) {
-                                                Icon(Icons.Default.Warning, contentDescription = "Review queue")
+                                                Icon(Icons.Outlined.Schedule, contentDescription = null)
                                             }
                                         },
-                                        label = { Text("Review") }
+                                        label = { Text("Pending") }
                                     )
                                     NavigationBarItem(
-                                        selected = selectedTab == 1,
-                                        onClick = {
-                                            selectedTab = 1
-                                            navController.navigate("sync_status") {
-                                                popUpTo("transaction_list") { inclusive = false }
-                                                launchSingleTop = true
-                                            }
-                                        },
-                                        icon = { Icon(Icons.Default.Refresh, contentDescription = "Sync") },
-                                        label = { Text("Sync") }
-                                    )
-                                    NavigationBarItem(
-                                        selected = selectedTab == 2,
-                                        onClick = {
-                                            selectedTab = 2
-                                            navController.navigate("settings") {
-                                                popUpTo("transaction_list") { inclusive = false }
-                                                launchSingleTop = true
-                                            }
-                                        },
-                                        icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
+                                        selected = currentRoute == ROUTE_SETTINGS,
+                                        onClick = { openTab(ROUTE_SETTINGS) },
+                                        icon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
                                         label = { Text("Settings") }
                                     )
                                 }
@@ -206,22 +205,31 @@ class MainActivity : ComponentActivity() {
                         ) { padding ->
                             NavHost(
                                 navController = navController,
-                                startDestination = "transaction_list",
-                                modifier = Modifier.padding(padding)
+                                startDestination = ROUTE_HOME,
+                                // Consumed so each screen's own Scaffold doesn't pad
+                                // for the system bars a second time (edge-to-edge).
+                                modifier = Modifier
+                                    .padding(padding)
+                                    .consumeWindowInsets(padding)
                             ) {
-                                composable("transaction_list") {
-                                    TransactionListScreen(
+                                composable(ROUTE_HOME) {
+                                    HomeScreen(
                                         database = database,
+                                        isSignedIn = isSignedIn,
                                         onTransactionTap = { txId ->
                                             navController.navigate("category_editor/$txId")
-                                        }
+                                        },
+                                        onOpenSettings = { openTab(ROUTE_SETTINGS) }
                                     )
                                 }
-                                composable("review_queue") {
-                                    ReviewQueueScreen(
+                                composable(ROUTE_PENDING) {
+                                    PendingScreen(
                                         database = database,
                                         onMessageTap = { messageId ->
                                             navController.navigate("resolve_message/$messageId")
+                                        },
+                                        onTransactionTap = { txId ->
+                                            navController.navigate("category_editor/$txId")
                                         }
                                     )
                                 }
@@ -238,18 +246,12 @@ class MainActivity : ComponentActivity() {
                                         onDone = { navController.popBackStack() }
                                     )
                                 }
-                                composable("sync_status") {
-                                    SyncStatusScreen(
+                                composable(ROUTE_SETTINGS) {
+                                    SettingsScreen(
                                         database = database,
                                         isSignedIn = isSignedIn,
                                         onSignIn = { launchGoogleSignIn() },
                                         onSignOut = { signOut() }
-                                    )
-                                }
-                                composable("settings") {
-                                    SettingsScreen(
-                                        database = database,
-                                        context = this@MainActivity
                                     )
                                 }
                                 composable(
@@ -310,26 +312,28 @@ class MainActivity : ComponentActivity() {
 @androidx.compose.runtime.Composable
 private fun PermissionPrompt(onRequestPermission: () -> Unit) {
     Box(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding(),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(32.dp)
+            modifier = Modifier.padding(Spacing.xxl)
         ) {
             Text(
                 text = "SMS Permission Required",
                 style = MaterialTheme.typography.titleLarge,
                 textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(Spacing.lg))
             Text(
                 text = "Buckey Finance Tracker needs SMS access to read " +
                         "bank transaction messages. Your data stays on-device.",
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(Spacing.xl))
             Button(
                 onClick = onRequestPermission,
                 modifier = Modifier.fillMaxWidth()

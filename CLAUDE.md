@@ -37,7 +37,7 @@ layer — the wiring is inline in the entry points themselves.
                        └─ SheetCategorySync: dirty rows → H:J in place
                                           ──► Google Sheets "Transactions" tab
 
-    unparsed_messages ──► ReviewQueueScreen → ResolveMessageScreen (Stage 6)
+    unparsed_messages ──► PendingScreen → ResolveMessageScreen (Stage 6)
                        └─ UnparsedResolver.resolve()  ──► transactions + markAsResolved
                        └─ UnparsedResolver.dismiss()  ──► markAsResolved only
 
@@ -46,6 +46,13 @@ layer — the wiring is inline in the entry points themselves.
                        └─ inserts statement rows the SMS path missed
                        └─ relabels rows by rule, then overrides (never manual rows)
                           (Stage 7 write-back; the next sync carries it to Sheets)
+
+    transactions ──► HomeScreen (read-only; redesign 2026-10-24)
+                       └─ BalanceCalculator: earliest SMS "Bal:" + every later row
+                          = running balance; checked against the latest SMS balance
+                       └─ MonthSummary: spent (debits minus transfers and repayments,
+                          or every debit), month net,
+                          day/month groups
 
 Room is the source of truth (rule 8). Sheets is a synced copy keyed by
 `transaction_id`: rows are appended once and sorted into date order; the only
@@ -62,7 +69,15 @@ Key files:
 - `data/importer/MerchantMapImporter.kt` — applies the Stage 7 merchant map to Room
 - `data/review/UnparsedResolver.kt` — Stage 6: manual entry → `TransactionEntity`
 - `data/category/GenericMerchant.kt` — the one definition of "UPI-like" merchant
-- `MainActivity.kt` — permissions, NavHost, bottom bar; screens take `AppDatabase` directly
+- `data/summary/` — `BalanceCalculator` (running balance + SMS check, in paise),
+  `MonthSummary` (spent, month net, grouping), `HomePreferences` (Settings →
+  Net shows / Spent shows)
+- `MainActivity.kt` — permissions, NavHost, bottom bar (Home · Pending · Settings);
+  screens take `AppDatabase` directly
+- `ui/theme/` — palette (`Theme.kt`), 4-size type scale (`Type.kt`), `Spacing`/`Sizes`
+- `ui/components/` — `TransactionRow`, `CategoryAvatar`, the shared merchant-map
+  import launcher, `ThemePreviews` + fake `PreviewData`
+- `.github/design/home-screen.md` — the approved home brief and decisions behind it
 
 ### The backfill path is mostly theoretical
 
@@ -76,7 +91,8 @@ and do not assume it will exercise any code you change.
 
 Any whitelisted SMS the parser returns `null` for lands in `unparsed_messages`
 with `failure_reason` and `manually_resolved = false`. Rule 5: it is never
-dropped. The Review tab lists them; resolving or dismissing one sets
+dropped. The Pending tab lists them (above the uncategorized transactions);
+resolving or dismissing one sets
 `manually_resolved = true` and never deletes the row.
 
 A manually resolved transaction's `transaction_id` is rule 10's hash over the
@@ -102,7 +118,7 @@ chosen deliberately over a generic amount/date extractor:
 3. **Format changes are detectable.** When a bank changes its template, the
    regex stops matching and messages pile up in `unparsed_messages` from one
    sender — a signal. A fuzzy parser would keep producing degraded output.
-4. **It is testable without a device.** `SibParserTest` runs 15 fixtures as plain
+4. **It is testable without a device.** `SibParserTest` runs 20 fixtures as plain
    JVM unit tests. Rule 13: no parser ships without a test file of real (redacted)
    SMS.
 
@@ -243,11 +259,11 @@ on `SEED_CATEGORIES` in `AppDatabase.kt` for why, and do not re-add them.
 | 0 Project setup | Done. AGP 8.7.3, Kotlin 2.0.21, Gradle 8.9, KSP, compileSdk 35, minSdk 26. |
 | 1 SMS capture | Done, verified on-device. Backfill blocked on Android 14+ by design. |
 | 2 Local storage | Done. 3 entities, 3 DAOs, `AppDatabase` v4 (real migrations from v2; never rely on the destructive fallback). |
-| 3 Parsing | Done for UPI debit/credit only. 15 passing unit tests. See limits above. |
+| 3 Parsing | Done for UPI debit/credit only, plus `parseBalance` (the SMS's quoted balance, for Home). 20 passing unit tests. See limits above. |
 | 4 Categorization | Done, but only reaches credits. Debits have no payee to match on and land as "Uncategorized" by design. |
 | 5 Sheets sync | Done and working. Deviations: sheet ID is baked in at build time from `secrets.properties` into `BuildConfig.GOOGLE_SHEET_ID` rather than user-entered; sync interval is 15 min, not the 6 h the spec suggests. |
 | 4.5 On-device fallback | Proposed, not started. See below. |
-| 6 Review queue | **Done, verified on device (2026-10-24).** Review tab, manual entry form, dismiss, 13 unit tests. Per-sender format-change flagging not built. |
+| 6 Review queue | **Done, verified on device (2026-10-24).** Now the Pending tab (with uncategorized rows), manual entry form, dismiss, 13 unit tests. Per-sender format-change flagging not built. |
 | 7 Reconciliation | **Done.** `reconciliation/` — PDF diff + RRN join + merchant write-back, 73 tests. **Verified on a real 3-month statement** (2026-10-24): 374 rows, 0 balance failures; diff matched 112/171 (109 by RRN). **Round trip verified on device (2026-10-24):** `--apply` wrote 84 merchants; import applied 84/84 fixes, added 59 statement-only rows, cleared 11 from Review, 0 duplicate RRNs; Sheet = Room + header. |
 
 `.github/STAGES.md` is the stage spec, with status blocks for every stage built.
@@ -340,6 +356,74 @@ Follow these; they are consistent enough to be real conventions.
 - **Secrets:** `secrets.properties` is gitignored and read in `app/build.gradle.kts`
   into `BuildConfig`. Never commit a client ID or sheet ID.
 
+## UI rules
+
+Apply to every new or changed screen. Existing screens predate these rules and
+are brought into line only when a task touches them; never as a drive-by.
+
+- **Material 3 only.** `androidx.compose.material3` components and
+  `MaterialTheme`; no Material 2, no third-party UI kits.
+- **Everything from the central theme** (`ui/theme/`). Colors from
+  `MaterialTheme.colorScheme`, text from `MaterialTheme.typography`, spacing from
+  `Spacing` / `Sizes` (`ui/theme/Spacing.kt`). Never a literal `Color(0x…)`,
+  `.sp` or ad-hoc `.dp` in a screen; add a token there instead.
+- **Clean and minimal.** Content first, quiet chrome. No gradients, decorative
+  shadows or ornamental motion. One focal point per screen. When the
+  `frontend-design` skill pushes for something distinctive or bold, these rules
+  win.
+- **Type: at most 4 text sizes and 2 weights** across the app, chosen from the
+  `Typography` in `Type.kt` (28/20/15/13 sp, Normal and Medium; every Material
+  slot maps onto them).
+- **Touch targets at least 48dp** in both dimensions, using
+  `minimumInteractiveComponentSize()` or the M3 component defaults.
+- **Previews for every screen:** `@Preview`s for its empty, loaded and error
+  states, in light and dark (`@ThemePreviews`). Previews take fake state, not
+  `AppDatabase`, so split each screen into a stateful wrapper and a stateless
+  content composable (`HomeScreen`/`HomeContent` is the reference).
+- **Preview and test data is fake or redacted.** Never a real SMS body, account
+  number, RRN, name or amount from the user's data (rule 12). Use the same
+  redaction style as the parser fixtures, or `PreviewData`.
+- **Edge-to-edge:** follow the `edge-to-edge` skill for insets. Its
+  `WindowInsetsRulers` / `fitInside` options need a newer Compose than the
+  current BOM, so use `imePadding()` and `Scaffold` padding instead.
+
+## UI intake — interview before any UI code
+
+Before generating or changing any UI (a new screen, a redesign, or a visible
+change to an existing one), write no code. Interview the user first.
+
+- **Use AskUserQuestion**, at most 4 questions per batch. Each question has 2–4
+  concrete options, the recommended one first and marked "(Recommended)"; the
+  user can always type their own answer. Recommendations follow the UI rules
+  above and the existing app.
+- **Cover, across as many batches as needed:**
+  1. Purpose and focal point: the one job of the screen, and what the eye lands
+     on first.
+  2. Data and actions: what is shown, from which DAO/entity, and what the user
+     can do (primary vs secondary actions).
+  3. Layout and hierarchy: order of sections, what is grouped, what is hidden
+     behind a tap.
+  4. Density: compact list vs roomy cards; how many items fit above the fold.
+  5. Color and light/dark: dynamic color or Buckey's own palette; how debit,
+     credit and pending states are marked without relying on color alone.
+  6. Typography: which of the theme's sizes/weights carry which content.
+  7. Navigation: how the user arrives and leaves; bottom bar, back, deep links.
+  8. Components: which M3 components (list items, cards, chips, sheets, dialogs).
+  9. States: empty, loading, error, and partial (e.g. sync failed, rows
+     unsynced).
+  10. Motion: none by default; only motion that explains a change.
+  11. Accessibility: TalkBack labels, contrast, font scaling, 48dp targets.
+  12. Reference apps: any app whose look or flow the user wants to echo.
+- **Probe when answers are vague.** "Clean" or "like GPay" gets a follow-up
+  batch that pins it to concrete choices; don't fill gaps with defaults silently.
+  Skip topics a small change genuinely doesn't touch, and say which were skipped.
+- **End with a design brief** of at most ~15 lines: purpose, focal point,
+  layout sketch (ASCII), components, states, open questions. The user approves
+  it (or edits it) before any code is written. Code then follows the brief and
+  the UI rules; a deviation found while building goes back to the user.
+- Trivial UI fixes (a typo, a wrong string, one misaligned padding) skip the
+  interview; say so and proceed.
+
 ## Hard rules — do not break without asking
 
 From `.github/COPILOT-INSTRUCTIONS.MD`, restated because they are easy to
@@ -396,5 +480,13 @@ violate accidentally:
   on a desktop, move `out/merchant_map.json` to the phone, import it in Settings.
   There is no automation of that hop and, given rule 11's permission cap, that is
   probably correct.
+- **UI redesign (2026-10-24) — built, unit-tested, not yet verified on device.**
+  Home (summary, running balance + verify sheet, day/month groups), Pending tab
+  (Review queue + uncategorized), Sync and "Open in Google Sheets" in Settings,
+  Net shows / Spent shows choices, own palette, type scale and spacing tokens,
+  `enableEdgeToEdge()`. Brief:
+  `.github/design/home-screen.md`. Not yet brought in line with the UI rules:
+  `CategoryEditorScreen`, `ResolveMessageScreen` (their text fields also lack
+  `adjustResize`; see the `edge-to-edge` skill).
 - Known defects and cross-module inconsistencies are tracked separately; ask
   before assuming any of them have been fixed.
