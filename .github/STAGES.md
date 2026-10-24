@@ -178,8 +178,13 @@ Deviations from the spec above:
 - Sheet ID is **not** user-specified at runtime. It is read from
   `secrets.properties` into `BuildConfig.GOOGLE_SHEET_ID` at build time.
 - Sync interval is **15 minutes**, not 6 hours.
-- `GoogleSheetsRepository.isDuplicate()` re-reads the whole `Transactions!A:H`
-  range once per unsynced transaction. `appendBatch()` exists but is unused.
+- ~~`isDuplicate()` re-reads the whole range once per transaction.~~ Fixed
+  2026-10-24: one read of column A per sync (`fetchRowIndex`) serves dedup and
+  the category pass; `isDuplicate()` is only the fallback if that read fails.
+  The unused `appendBatch()` was removed.
+- Rule 10 amended 2026-10-24: H:J of a synced row may be rewritten, the tab is
+  sorted by date after appends, and an explicit rebuild rewrites it from Room.
+  See "Stage 7 — Follow-up" below.
 
 ## Stage 6 — Status
 
@@ -211,7 +216,7 @@ What was built:
 
 Not built: the optional "flag repeat unparsed patterns per sender" item.
 
-**Done when (still to check on device):** an unparsed SMS can be resolved into a
+**Done when — met (2026-10-24):** an unparsed SMS is resolved into a
 transaction from the Review tab, it appears in the Transactions list, the badge
 count drops, and the next sync appends exactly one Sheet row for it.
 
@@ -234,7 +239,7 @@ Built in `reconciliation/`:
   written with `USER_ENTERED` reads back as a float and breaks the join).
 - `matching.py` — RRN-exact tier, then amount+date±1day, ties left unmatched.
 - `make_sample_pdf.py` — synthetic statement in the real layout, for tests.
-- `test_reconcile.py` — 59 unit tests, all passing.
+- `test_reconcile.py` — 59 unit tests at the time (73 now), all passing.
 
 Write-back goes to both the Sheet (column D) and `out/merchant_map.json`.
 `--apply` refuses to run when rows fail the balance check unless `--force`.
@@ -249,7 +254,8 @@ On the app side, `data/importer/MerchantMapImporter.kt` consumes
 Framework — no new permission) and repairs `transactions.merchant` by
 `transaction_id`, recomputing the category so a repaired merchant matches the
 rules. Conservative and idempotent: generic merchants only, "Uncategorized"
-categories only, no Sheets writes. 19 unit tests in `MerchantMapImporterTest`.
+categories only, no Sheets writes. 19 unit tests in `MerchantMapImporterTest`
+at the time (26 now; the importer grew, see the follow-up below).
 
 **Extraction verified on a real statement (2026-10-24):** a 3-month SIB
 statement (3 Jun – 2 Sep 2026) gave 374 rows with 0 balance-checksum failures, and
@@ -275,3 +281,56 @@ restores missing starter rules, and resets the affected debits once.
 statement-only rows (all synced, 0 duplicate RRNs), and cleared 11 queued SMS
 (rows kept, rule 5). `CategoryRepair` restored the starter rules (25 rules: 22
 starters plus 3 learned) and removed `upi → Transfer`.
+
+## Stage 7 — Follow-up (2026-10-24)
+
+**Status: ✅ COMPLETE — verified on the Pixel 9a and in the Sheet (2026-10-24).**
+
+Built after the first round trip, at the user's request:
+
+- **Full statement backfill.** `merchant_map.json` carries `missing`: every
+  statement row the app never recorded, including those before capture began
+  (SIB sometimes sends no SMS). The importer inserts them
+  (`sender_address = "SIB-STATEMENT"`) and clears any queued SMS naming the same
+  RRN. Rows with no RRN get `STMT-<yyyymmdd>-<D|C>-<paise>[-n]`.
+- **The user's rules.** `reconciliation/private/category_rules.json`
+  (gitignored; it names real people) adds `rules` and `overrides` to the map.
+  The importer saves the rules and relabels every row each one governs.
+  `--rules-only --push` sends rules without a statement.
+- **Category editor scopes.** Only this / this and every later / every
+  transaction from the merchant (`CategoryUpdater`). Rule 7 amended accordingly.
+- **Credit rule.** Credits carry only Income, Transfer or Self Transfer;
+  anything else becomes Transfer (`CategoryMatcher.forType`), enforced at
+  capture, in bulk SQL, in the editor and by `CategoryRepair`.
+- **Parser fix.** Credits from other banks (`UPI/{bank}/` instead of
+  `UPI/SIBL/`), 3 new fixtures.
+- **Sheet follows Room.** Room v3 (`category_dirty`): category changes rewrite
+  the Sheet in place. Room v4 (`categorized_by`): two new columns,
+  **I Source** (`sms` / `bank_statement`) and **J Categorized By**
+  (`auto` / `manual` / `development`). The tab is sorted by date after every
+  append; the first v4 sync rebuilt it from Room behind a backup tab, and
+  Settings → Rebuild Google Sheet repeats that.
+- **Monthly flow on the unredacted statement.** The user runs
+  `sib_statement_diff.py <pdf> --apply --push`, answers the password prompt,
+  deletes the PDF, and imports on the phone. Claude reviews only
+  `reconciliation/out/` and the device DB. `--apply`/`--push` refuse to run if any
+  row fails the balance check.
+
+**Verified:** 587 transactions in Room and in the Sheet, one row each, in date
+order; Source 319 bank_statement / 268 sms; Categorized By 435 development /
+88 manual / 64 auto; 0 unsynced, 0 dirty, 0 credits outside Income/Transfer.
+A second statement categorized 113 of 147 debits (77%) automatically.
+
+Tests: 76 Kotlin (SibParser 15, UnparsedResolver 13, MerchantMapImporter 26,
+CategoryUpdater 8, CategoryMatcher 4, SheetCategorySync 5, SheetRowFormat 5)
+and 73 Python.
+
+## What's left
+
+- **PDF statement straight into the app**, replacing the desktop script.
+- **Autopay / e-mandate** messages (currently dismissed from the Review queue).
+- **More SIB SMS formats:** ATM, POS/card, NEFT/IMPS/RTGS, failed/reversed, and
+  the one queued UTIB credit whose payee has a character outside `[\w\s]`.
+- Stage 6 optional: flag repeated unparsed patterns per sender.
+- Stage 4.5 (on-device Gemini Nano): proposed only; needs a rule 6 amendment.
+- `gradlew.bat` is broken from the CLI (wrapper jar); Android Studio is fine.

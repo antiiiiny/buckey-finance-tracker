@@ -125,26 +125,6 @@ class GoogleSheetsRepository(private val context: Context) {
         }
     }
 
-    /** Appends multiple transactions in a single batch API call. */
-    suspend fun appendBatch(transactions: List<TransactionEntity>): Boolean = withContext(Dispatchers.IO) {
-        val service = sheetsService ?: return@withContext false
-        if (transactions.isEmpty()) return@withContext true
-        try {
-            val valueRange = ValueRange().setValues(transactions.map { SheetRowFormat.values(it) })
-            service.spreadsheets().values()
-                .append(sheetId, DATA_RANGE, valueRange)
-                .setValueInputOption("USER_ENTERED")
-                .setInsertDataOption("INSERT_ROWS")
-                .execute()
-
-            Log.i(TAG, "Appended batch of ${transactions.size} transactions")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Error appending batch: ${e.message}")
-            false
-        }
-    }
-
     /**
      * Sorts every data row (row 2 down) by the Date column, oldest first, in one
      * request. Run after appends so a new row, from SMS or a bank statement,

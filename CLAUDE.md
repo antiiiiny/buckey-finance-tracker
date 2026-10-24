@@ -25,23 +25,28 @@ layer — the wiring is inline in the entry points themselves.
                        unparsed_messages, batched via insertAll (suspend, IO)
 
     transactions ──► SheetsSyncWorker (periodic 15 min + manual one-shot)
+                       └─ first sync on v4: rebuild() — backup tab, rewrite all rows
                        └─ getUnsyncedTransactions()
-                       └─ GoogleSheetsRepository.isDuplicate() → appendRow()
-                       └─ markAsSynced()  ──► Google Sheets "Transactions" tab
+                       └─ fetchRowIndex() (column A) dedup → appendRow()
+                       └─ markAsSynced() → sortByDate()
+                       └─ SheetCategorySync: dirty rows → H:J in place
+                                          ──► Google Sheets "Transactions" tab
 
     unparsed_messages ──► ReviewQueueScreen → ResolveMessageScreen (Stage 6)
                        └─ UnparsedResolver.resolve()  ──► transactions + markAsResolved
                        └─ UnparsedResolver.dismiss()  ──► markAsResolved only
 
     merchant_map.json ──► MerchantMapImporter (Settings, user picks the file)
-                       └─ repairs transactions.merchant by transaction_id
-                       └─ re-runs CategoryMatcher on the repaired merchant
-                          (Stage 7 write-back; never touches Sheets)
+                       └─ saves rules, repairs transactions.merchant by transaction_id
+                       └─ inserts statement rows the SMS path missed
+                       └─ relabels rows by rule, then overrides (never manual rows)
+                          (Stage 7 write-back; the next sync carries it to Sheets)
 
 Room is the source of truth (rule 8). Sheets is a synced copy keyed by
-`transaction_id`: rows are appended once, and the only in-place write is a
-synced row's Category cell (rule 10, amended 2026-10-24). Nothing is ever read
-back from Sheets into Room except column A, to locate rows.
+`transaction_id`: rows are appended once and sorted into date order; the only
+in-place writes are a synced row's H:J cells and an explicit rebuild (rule 10,
+amended 2026-10-24). Nothing is ever read back from Sheets into Room except
+column A, to locate rows.
 
 Key files:
 - `data/sms/SmsReceiver.kt` — live capture + full pipeline, the real orchestrator
@@ -173,7 +178,7 @@ that categorizes them.
 
 **Sheet categories follow Room.** Every DAO write to `category` sets
 `category_dirty`. After appending, `SheetsSyncWorker` reads column A once,
-then rewrites column H of dirty synced rows in one batch (`SheetCategorySync`),
+then rewrites H:J of dirty synced rows in one batch (`SheetCategorySync`),
 clearing the flag only if the category didn't change mid-sync.
 
 **Tier 3 — statement matching on RRN (Stage 7, built). This is the real answer
@@ -190,13 +195,11 @@ RRN-exact matches unless `--allow-fuzzy-merchant` is passed. See
 reads `merchant_map.json` (Settings → Import Merchant Map, via the Storage Access
 Framework so no new permission is needed) and repairs `transactions.merchant` by
 `transaction_id`, then recomputes the category — once a debit says "BLINKIT" it
-matches the seeded `blinkit → Groceries` rule for the first time. It is
-deliberately conservative: only generic merchants are overwritten, only an
-"Uncategorized" category is recomputed, and re-importing the same file is a
-no-op. It does **not** re-sync repaired rows — Sheets writes are append-only
-(rule 10), so re-syncing would duplicate rather than update. The script's
-`--apply` is what fixes the Sheet's merchant column; the Sheet's category column
-is not repaired by anything.
+matches the seeded `blinkit → Groceries` rule for the first time. Only generic
+merchants are overwritten, a row the user categorized by hand is never
+relabelled, and re-importing the same file is a no-op. Repaired rows are not
+re-appended (that would duplicate them); the script's `--apply` fixes the
+Sheet's merchant column, and the category sync above fixes H:J.
 
 The map also carries `missing`: **every** statement row the app never
 recorded — unmatched rows in the overlap and everything before capture began,
@@ -240,7 +243,7 @@ on `SEED_CATEGORIES` in `AppDatabase.kt` for why, and do not re-add them.
 | 5 Sheets sync | Done and working. Deviations: sheet ID is baked in at build time from `secrets.properties` into `BuildConfig.GOOGLE_SHEET_ID` rather than user-entered; sync interval is 15 min, not the 6 h the spec suggests. |
 | 4.5 On-device fallback | Proposed, not started. See below. |
 | 6 Review queue | **Done, verified on device (2026-10-24).** Review tab, manual entry form, dismiss, 13 unit tests. Per-sender format-change flagging not built. |
-| 7 Reconciliation | **Built.** `reconciliation/` — PDF diff + RRN join + merchant write-back, 59 tests. **Verified on a real 3-month statement** (2026-10-24): 374 rows, 0 balance failures; diff matched 112/171 (109 by RRN). **Round trip verified on device (2026-10-24):** `--apply` wrote 84 merchants; import applied 84/84 fixes, added 59 statement-only rows, cleared 11 from Review, 0 duplicate RRNs; Sheet = Room + header. |
+| 7 Reconciliation | **Done.** `reconciliation/` — PDF diff + RRN join + merchant write-back, 73 tests. **Verified on a real 3-month statement** (2026-10-24): 374 rows, 0 balance failures; diff matched 112/171 (109 by RRN). **Round trip verified on device (2026-10-24):** `--apply` wrote 84 merchants; import applied 84/84 fixes, added 59 statement-only rows, cleared 11 from Review, 0 duplicate RRNs; Sheet = Room + header. |
 
 `.github/STAGES.md` is the stage spec, with status blocks for every stage built.
 When a stage completes, update it there as well as here.
@@ -369,9 +372,11 @@ violate accidentally:
 - **Queued credits from before the parser fix stay queued.** The fix only applies
   to new SMS. Don't resolve them by hand: the next statement import adds them and
   clears them by RRN, whereas a hand-entered row with no RRN would be duplicated.
-- **Category scopes and Sheet category sync — built, not yet verified on
-  device.** First launch on v3 marks every synced row dirty, so the first sync
-  rewrites all of column H once.
+- **Category scopes, Sheet category sync, date-sorted Sheet with Source /
+  Categorized By — verified on device 2026-10-24:** 587 transactions, Sheet
+  rebuilt in date order (backup tab kept), 0 unsynced, 0 dirty. 7 rows still
+  Uncategorized (5 left blank by the user, 2 UPI debits matched by amount+date
+  only, so unnamed).
 - **Later (user's list):** PDF statement straight into the app, replacing the
   desktop script; autopay handling.
 - **Statement backfill + user's rules — verified on device 2026-10-24:** 203

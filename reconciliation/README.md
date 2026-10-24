@@ -131,13 +131,14 @@ Merchant fixes are restricted to **RRN-exact matches** unless you pass
 `--allow-fuzzy-merchant`. An amount+date match is a strong hint, not an
 identity, and this writes into a financial record.
 
-Only the merchant is written, never the category. Categorization rules live in
-Room (`category_rules`), and duplicating them here would drift. Category follows
-when the app imports the map.
+`--apply` writes only the merchant column. Categories are Room's job: the
+map carries your rules (`private/category_rules.json`) to the app, and the app's
+sync rewrites the Sheet's Category, Source and Categorized By cells (H:J).
 
 ### Getting the map onto the phone
 
-1. Move `out/merchant_map.json` to the device however you like — Drive, USB, mail.
+1. `--push` copies `out/merchant_map.json` to the phone's Download folder over
+   adb. Without adb, move it however you like — Drive, USB, mail.
 2. In the app: **Settings → Import Merchant Map**, and pick the file.
 
 The picker uses the Storage Access Framework, so the app needs no storage
@@ -146,9 +147,10 @@ permission (rule 11 caps what it may request). `MerchantMapImporter` then repair
 repaired "BLINKIT" finally matches the seeded `blinkit → Groceries` rule.
 
 The import is conservative and idempotent: it only overwrites merchants that are
-still generic, only recomputes a category that is still "Uncategorized", and does
-nothing on a second run. It never touches Sheets — those writes are append-only,
-so re-syncing a repaired row would duplicate it. `--apply` is what fixes the Sheet.
+still generic, never relabels a transaction you categorized by hand, and does
+nothing on a second run. It also adds every statement row the app never recorded
+(`missing`). The app never re-appends a repaired row; `--apply` fixes the Sheet's
+merchant column and the next sync fixes its category cells.
 
 ## How the extractor reads the PDF
 
@@ -195,8 +197,9 @@ plausible-but-wrong rows.
 .venv/Scripts/python -m unittest test_reconcile -v
 ```
 
-59 tests: RRN normalization, both match tiers, ambiguity handling, overlap scoping,
-merchant-recovery gating, narration parsing against real SIB formats, and
+73 tests: RRN normalization, both match tiers, ambiguity handling, overlap scoping,
+merchant-recovery gating, narration parsing against real SIB formats, missing-row
+references, rules-only maps, password-protected PDFs, and
 end-to-end extraction from a synthetic PDF built by `make_sample_pdf.py` in the
 real statement's shape. The PDF tests skip if reportlab is absent.
 

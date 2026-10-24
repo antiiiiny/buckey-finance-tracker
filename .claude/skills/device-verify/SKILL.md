@@ -28,7 +28,13 @@ Quote those strings exactly in the steps.
   `package:mine tag:<Tag>`.
 - **Database Inspector:** View → Tool Windows → App Inspection → Database Inspector,
   process `com.buckey.financetracker`. Tables are `transactions`,
-  `unparsed_messages` and `category_rules` (22 seeded rows).
+  `unparsed_messages` and `category_rules` (22 seeded rows plus learned ones).
+  DB is v4; `transactions` has `category_dirty` and `categorized_by`. If the
+  Inspector hangs on "Waiting for data", Claude can read the DB itself over
+  `adb exec-out run-as com.buckey.financetracker cat databases/...`
+  (Git Bash needs `MSYS_NO_PATHCONV=1`).
+- **Sheet layout:** A–H as before, I Source, J Categorized By (`SheetRowFormat`),
+  sorted by date after every sync.
 - **Unit tests in Android Studio:** right-click
   `app/src/test/java/com.buckey.financetracker` → Run 'Tests in …'.
 - **Rule 12 check for any capture/sync step:** the raw SMS body must never appear in

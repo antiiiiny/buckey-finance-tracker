@@ -15,12 +15,16 @@ app/
     sms/        SmsReceiver.kt, SmsBackfill.kt, SenderWhitelist.kt
     parser/      TransactionParser.kt, banks/SibParser.kt, ParsedTransaction.kt
     db/          entities/, dao/, AppDatabase.kt
-    category/    CategoryMatcher.kt, MerchantMemory.kt
-    sheets/      GoogleSheetsRepository.kt, SheetsSyncWorker.kt
-  domain/        CaptureTransactionUseCase.kt, CategorizeTransactionUseCase.kt, SyncToSheetsUseCase.kt
-  ui/            screens/TransactionList, screens/CategoryEditor, screens/SyncStatus, screens/Settings
+    category/    CategoryMatcher.kt, MerchantMemory.kt, CategoryUpdater.kt, CategoryRepair.kt, GenericMerchant.kt
+    sheets/      GoogleSheetsRepository.kt, SheetsSyncWorker.kt, SheetRowFormat.kt, SheetCategorySync.kt
+    review/      UnparsedResolver.kt
+    importer/    MerchantMapImporter.kt
+  ui/            screens/TransactionList, screens/CategoryEditor, screens/SyncStatus, screens/Settings,
+                 screens/ReviewQueue, screens/ResolveMessage
 reconciliation/   sib_statement_diff.py  (separate Python script, not part of the app build)
 ```
+There is no `domain/` layer: the use-case placeholders were never filled and were
+removed on 2026-10-24. Wiring lives in the entry points (see CLAUDE.md).
 
 ## Rules — do not deviate without asking
 
