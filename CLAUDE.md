@@ -4,6 +4,11 @@ Native Android app (Kotlin, Compose). Captures South Indian Bank transaction SMS
 on-device, parses and categorizes them locally, syncs to a Google Sheet the user
 owns. No third-party backend. Target device: Pixel 9a, API 35, min SDK 26.
 
+**New session? Load the `handoff` skill first** and read in its order, starting
+with `.github/HANDOFF.md`. **Before every commit, run that skill's checklist**
+(tests, counts, docs, HANDOFF.md, secrets scan). When the user says "handoff",
+follow its Part 3.
+
 The authoritative rules live in `.github/COPILOT-INSTRUCTIONS.MD`. This file
 describes what is actually built and why. Where the two disagree, this file is
 the accurate one — flag the drift rather than silently following either.
