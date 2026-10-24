@@ -1,0 +1,3 @@
+# Test-only. Not needed to run a reconciliation.
+-r requirements.txt
+reportlab>=4.0

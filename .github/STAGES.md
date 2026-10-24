@@ -122,7 +122,7 @@ What was built:
 What was built:
 - `CategoryRuleEntity.kt` — Room entity with merchantPattern (unique index) and category fields
 - `CategoryDao.kt` — DAO with getAllRules (Flow), insertOrUpdate, findMatch (SQL LIKE substring match), deleteById
-- `AppDatabase.kt` — version 2 with CategoryRuleEntity, CategoryDao, fallbackToDestructiveMigration, and SEED_CALLBACK with 25 starter rules (Food, Transport, Shopping, Groceries, Utilities, Housing, Income, Transfer, Entertainment)
+- `AppDatabase.kt` — version 2 with CategoryRuleEntity, CategoryDao, fallbackToDestructiveMigration, and SEED_CALLBACK with 25 starter rules (Food, Transport, Shopping, Groceries, Utilities, Housing, Income, Transfer, Entertainment). *Later cut to 22: the `upi`/`neft`/`imps` → Transfer rules were removed because every SIB debit has merchant "UPI" — see the KDoc on `SEED_CATEGORIES`.*
 - `CategoryMatcher.kt` — matches merchant string against rules via SQL `LIKE '%pattern%'`, returns "Uncategorized" if no match
 - `MerchantMemory.kt` — saves/updates merchant→category mapping when user recategorizes
 - `TransactionListScreen.kt` — Compose screen with TopAppBar, LazyColumn of TransactionCards showing merchant, amount (color-coded red/green), date, category badge. Empty state when no transactions
@@ -167,3 +167,111 @@ What was built:
 
 ## Order of operations if you get stuck
 Do not skip ahead. If Stage 3 parsing is fragile, do not start Stage 4 — fix the parser and expand its test fixtures first. Each stage assumes the previous stage's "done when" criteria are actually true, not approximately true.
+---
+
+## Stage 5 — Status (recorded late)
+
+**Status: ✅ COMPLETE (2026-07-28)** — implemented in commit `719d4b7`, status
+block added retroactively on 2026-09-02.
+
+Deviations from the spec above:
+- Sheet ID is **not** user-specified at runtime. It is read from
+  `secrets.properties` into `BuildConfig.GOOGLE_SHEET_ID` at build time.
+- Sync interval is **15 minutes**, not 6 hours.
+- `GoogleSheetsRepository.isDuplicate()` re-reads the whole `Transactions!A:H`
+  range once per unsynced transaction. `appendBatch()` exists but is unused.
+
+## Stage 6 — Status
+
+**Status: ✅ COMPLETE — verified on the Pixel 9a (2026-10-24).** Built
+2026-09-25.
+
+What was built:
+- `data/review/UnparsedResolver.kt` — validates the manual entry, builds the
+  `TransactionEntity`, and inserts it + marks the source message resolved inside
+  one Room transaction. An explicit category on a real merchant is remembered
+  (rule 7); on a generic merchant ("UPI") it applies to that row only.
+- **Transaction ID for manual rows:** rule 10's formula over the *source SMS*
+  (`sender|receivedAt|rawBody`), not over the typed values. Resolving the same
+  SMS twice collides on the unique index instead of creating a second row, so
+  Sheets dedup holds. The transaction date is the SMS arrival time.
+- "Not a Transaction" dismisses OTPs/balance alerts by marking them resolved.
+  Nothing is deleted (rule 5).
+- `ui/screens/ReviewQueue/ReviewQueueScreen.kt` — list of unresolved messages
+  (sender, time, failure reason — no body). New "Review" tab with an unresolved
+  count badge.
+- `ui/screens/ResolveMessage/ResolveMessageScreen.kt` — manual entry form:
+  amount, debit/credit, merchant, category (or auto from rules), account last 4,
+  RRN. The raw SMS is hidden behind "Show original SMS" — this screen is rule 12's
+  dedicated raw-message view, since the user can't transcribe what they can't see.
+- `data/category/GenericMerchant.kt` — single definition of "generic merchant",
+  now shared by the category editor, the merchant map importer and the resolver.
+- `UnparsedResolverTest.kt` — 13 unit tests (amount parsing, validation, ID
+  stability).
+
+Not built: the optional "flag repeat unparsed patterns per sender" item.
+
+**Done when (still to check on device):** an unparsed SMS can be resolved into a
+transaction from the Review tab, it appears in the Transactions list, the badge
+count drops, and the next sync appends exactly one Sheet row for it.
+
+## Stage 7 — Status
+
+**Status: ✅ BUILT (2026-09-02)**
+
+Scope changed during Stage 7 planning. The original spec describes a read-only
+diff report. It is now also **the source of truth for debit merchant names**,
+because SIB's UPI debit SMS contains no payee and no parser or model can recover
+one from the message text. The statement narration has it; the RRN joins the two.
+
+Built in `reconciliation/`:
+- `sib_statement_diff.py` — CLI. Dry run by default; `--apply` writes.
+- `statement.py` — SIB PDF extraction, written against the real statement layout:
+  wrapped narration joined across physical lines, debit/credit resolved from the
+  amount's x position against the per-page column headers, and every row checked
+  against the running balance. Plus `--inspect` for retuning.
+- `sheets.py` — Sheets read/write, including RRN normalization (a 12-digit RRN
+  written with `USER_ENTERED` reads back as a float and breaks the join).
+- `matching.py` — RRN-exact tier, then amount+date±1day, ties left unmatched.
+- `make_sample_pdf.py` — synthetic statement in the real layout, for tests.
+- `test_reconcile.py` — 59 unit tests, all passing.
+
+Write-back goes to both the Sheet (column D) and `out/merchant_map.json`.
+`--apply` refuses to run when rows fail the balance check unless `--force`.
+
+Narration format confirmed from a real statement:
+`UPI/{BANK}/{RRN}/{PAYEE}/{purpose}` — payee is field 4, reference segment may be
+`{rrn}`, `RRN-{rrn}` or `RRN{rrn}`. Amount and balance sit on the first physical
+line; the payee's name wraps onto the second.
+
+On the app side, `data/importer/MerchantMapImporter.kt` consumes
+`merchant_map.json` (Settings → Import Merchant Map, via the Storage Access
+Framework — no new permission) and repairs `transactions.merchant` by
+`transaction_id`, recomputing the category so a repaired merchant matches the
+rules. Conservative and idempotent: generic merchants only, "Uncategorized"
+categories only, no Sheets writes. 19 unit tests in `MerchantMapImporterTest`.
+
+**Extraction verified on a real statement (2026-10-24):** a 3-month SIB
+statement (3 Jun – 2 Sep 2026) gave 374 rows with 0 balance-checksum failures, and
+every UPI row carried an RRN. Three fixes came out of it, each with a test:
+fake-bold headings (`dedupe_chars`), `M/S` business prefixes splitting the payee,
+and non-UPI narration no longer yielding a ref (the interest credit's only digit
+run is the account number). Added `--statement-only` (no OAuth) and scoping of
+the diff to the overlapping date range.
+
+**Dry-run diff against the Sheet (2026-10-24):** 171 statement rows in the
+overlapping dates, 112 matched (109 by RRN), 84 merchant fixes, 59 statement-only,
+10 sms-only (all on the statement's last day or after). The statement-only rows
+showed SIB sometimes sends no SMS, and that the credit regex rejected payers at
+other banks (fixed: `UPI/{bank}/` instead of `UPI/SIBL/`). `merchant_map.json`
+now carries those rows as `missing`, and the importer adds them.
+
+Also found on the device: `category_rules` held 4 rules including
+`upi → Transfer`. `CategoryRepair` (runs at launch) removes generic rules,
+restores missing starter rules, and resets the affected debits once.
+
+**Status: ✅ COMPLETE — round trip verified on the Pixel 9a (2026-10-24).**
+`--apply` wrote 84 merchant cells; the import applied 84/84 fixes, added the 59
+statement-only rows (all synced, 0 duplicate RRNs), and cleared 11 queued SMS
+(rows kept, rule 5). `CategoryRepair` restored the starter rules (25 rules: 22
+starters plus 3 learned) and removed `upi → Transfer`.

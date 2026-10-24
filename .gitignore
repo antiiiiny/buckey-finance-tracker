@@ -15,3 +15,13 @@ local.properties
 *.jks
 *.keystore
 secrets.properties
+
+# Stage 7 reconciliation
+reconciliation/.venv/
+reconciliation/credentials.json
+reconciliation/token.json
+reconciliation/out/
+reconciliation/__pycache__/
+*.pdf
+# Real bank statements: never committed, whatever the file type
+reconciliation/statements/

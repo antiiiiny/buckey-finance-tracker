@@ -31,6 +31,38 @@ interface TransactionDao {
     @Query("UPDATE transactions SET category = :category WHERE id = :id")
     suspend fun updateCategory(id: Long, category: String)
 
+    /**
+     * Repairs a row's merchant from an external source, keyed by the stable
+     * transaction hash rather than the local row id.
+     *
+     * Used by the Stage 7 merchant map import: the bank statement carries the
+     * payee that the debit SMS omits. Returns the number of rows updated, so the
+     * caller can report hashes that no longer exist on this device.
+     */
+    @Query(
+        "UPDATE transactions SET merchant = :merchant, category = :category " +
+            "WHERE transaction_id = :transactionId"
+    )
+    suspend fun updateMerchantAndCategory(
+        transactionId: String,
+        merchant: String,
+        category: String
+    ): Int
+
+    /**
+     * Moves rows with one of [merchants] (uppercase) from category [from] to [to].
+     * Returns the number of rows changed. Used by CategoryRepair to undo labels a
+     * `upi → Transfer` rule stamped onto every debit.
+     */
+    @Query(
+        "UPDATE transactions SET category = :to " +
+            "WHERE category = :from AND UPPER(TRIM(merchant)) IN (:merchants)"
+    )
+    suspend fun recategorizeMerchants(merchants: List<String>, from: String, to: String): Int
+
+    @Query("SELECT * FROM transactions WHERE raw_ref = :rawRef LIMIT 1")
+    suspend fun getByRawRef(rawRef: String): TransactionEntity?
+
     @Query("UPDATE transactions SET synced_to_sheets = 1 WHERE id = :id")
     suspend fun markAsSynced(id: Long)
 

@@ -14,7 +14,12 @@ import java.time.format.DateTimeFormatter
  * Handles two formats based on real captured SMS:
  *
  * **Debit:** `UPI debit:Rs.{amount},A/c X{last4}, {date} {time} RRN:{ref}. Bal:...`
- * **Credit:** `UPI Credit:INR Rs.{amount} in A/c X{last4}. Info:UPI/SIBL/{ref}/{merchant} on {date} {time}.Final balance...`
+ * **Credit:** `UPI Credit:INR Rs.{amount} in A/c X{last4}. Info:UPI/{bank}/{ref}/{merchant} on {date} {time}.Final balance...`
+ *
+ * `{bank}` is the *payer's* bank code: SIBL when the sender also banks with SIB,
+ * otherwise HDFC, ICIC, SBIN, PPIW (PhonePe wallet) and so on. It was once
+ * hardcoded to SIBL, which sent every credit from another bank to the review
+ * queue. Found by Stage 7 reconciliation against a real statement.
  */
 object SibParser : TransactionParser {
 
@@ -27,8 +32,9 @@ object SibParser : TransactionParser {
     )
 
     // UPI Credit:INR Rs.1.00 in A/c X6825. Info:UPI/SIBL/11030666xxxx/LEO STEV on 27-07-26 20:43:01....
+    // UPI Credit:INR Rs.600.00 in A/c X6825. Info:UPI/HDFC/62582920xxxx/AARON JACOB on ...
     private val creditPattern = Regex(
-        """UPI Credit:INR Rs\.(\d+\.?\d*) in A/c X(\w+)\. Info:UPI/SIBL/(\w+)/([\w\s]+) on (\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.""",
+        """UPI Credit:INR Rs\.(\d+\.?\d*) in A/c X(\w+)\. Info:UPI/[A-Z]{4}/(\w+)/([\w\s]+) on (\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.""",
         RegexOption.IGNORE_CASE
     )
 

@@ -34,7 +34,7 @@ reconciliation/   sib_statement_diff.py  (separate Python script, not part of th
 8. Room is the source of truth. Sheets is a synced copy, never the only copy. Every write path goes: SMS → Parser → Room → (later, async) → Sheets.
 9. Sheets sync uses OAuth scoped to `https://www.googleapis.com/auth/spreadsheets` only. Do not request Drive-wide scope.
 10. Sheets writes are append-only, keyed by a stable transaction ID (hash of sender + timestamp + raw SMS body) to prevent duplicate rows on re-sync.
-11. Permissions requested by the app: `RECEIVE_SMS`, `READ_SMS`, and the Google Sign-In scope above. Nothing else. Do not add permissions without the user asking first.
+11. Permissions requested by the app: `RECEIVE_SMS`, `READ_SMS`, `INTERNET` (for the Sheets API calls only), and the Google Sign-In scope above. Nothing else. Do not add permissions without the user asking first.
 12. Raw SMS body is stored in Room for parser debugging but is never logged, never included in crash output, never sent over network, never shown in any screen except a dedicated "raw message" debug view.
 13. Every bank parser gets a unit test file with real (redacted/sample) SMS formats as fixtures. No parser ships without a test.
 14. Kotlin style: 4-space indent, `val` over `var` wherever possible, data classes for models, small single-responsibility functions.
@@ -44,4 +44,4 @@ reconciliation/   sib_statement_diff.py  (separate Python script, not part of th
 - No network call except Google Sheets API.
 - No LLM API call from the Android app.
 - No third-party backend, no custom server, no Firebase.
-- No permission beyond the three listed in rule 11.
+- No permission beyond the ones listed in rule 11.

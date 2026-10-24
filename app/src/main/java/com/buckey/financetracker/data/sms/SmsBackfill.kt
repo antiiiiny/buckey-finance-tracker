@@ -1,21 +1,20 @@
 package com.buckey.financetracker.data.sms
 
-import android.content.ContentResolver
 import android.content.Context
-import android.database.Cursor
-import android.net.Uri
 import android.provider.Telephony
 import android.util.Log
 import com.buckey.financetracker.FinanceTrackerApp
+import com.buckey.financetracker.data.category.CategoryMatcher
 import com.buckey.financetracker.data.db.entities.TransactionEntity
 import com.buckey.financetracker.data.db.entities.UnparsedMessageEntity
 import com.buckey.financetracker.data.parser.banks.SibParser
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 
 /**
  * One-time query against the device's SMS inbox for historical messages
- * from whitelisted senders, run on first launch after SMS permission is granted.
+ * from whitelisted senders, run on first launch after SMS permission is granted
+ * (rule 1).
  *
  * Uses a SharedPreferences flag to ensure it only runs once per install.
  *
@@ -38,120 +37,115 @@ object SmsBackfill {
     }
 
     /**
-     * Queries [Telephony.Sms.Inbox.CONTENT_URI] for SMS from whitelisted senders
-     * and logs each matched message. Skips if backfill was already performed.
+     * Queries [Telephony.Sms.Inbox.CONTENT_URI] for SMS from whitelisted senders,
+     * runs them through the same parse → categorize pipeline as live capture, and
+     * persists the results. Skips if backfill was already performed.
+     *
+     * Suspends and does all its work on [Dispatchers.IO], so it is safe to call
+     * from the main thread's coroutine scope.
      *
      * On Android 14+, this will fail with SecurityException if the app is not
      * the default SMS app. That's expected — we catch it gracefully.
      *
      * @return the number of whitelisted messages found
      */
-    fun runBackfill(context: Context): Int {
+    suspend fun runBackfill(context: Context): Int = withContext(Dispatchers.IO) {
         if (isBackfillDone(context)) {
             Log.d(TAG, "Backfill already completed, skipping")
-            return 0
+            return@withContext 0
         }
 
-        val contentResolver: ContentResolver = context.contentResolver
-        val uri: Uri = Telephony.Sms.Inbox.CONTENT_URI
-
-        // We can't filter by sender in the query because sender IDs vary,
-        // so we fetch recent messages and filter in-memory
-        val projection = arrayOf(
-            Telephony.Sms.Inbox.ADDRESS,
-            Telephony.Sms.Inbox.BODY,
-            Telephony.Sms.Inbox.DATE_SENT,
-            Telephony.Sms.Inbox._ID
-        )
-        val sortOrder = "${Telephony.Sms.Inbox.DATE_SENT} DESC"
-
-        var matchedCount = 0
-
-        try {
-            val cursor: Cursor? = contentResolver.query(
-                uri, projection, null, null, sortOrder
-            )
-
-            cursor?.use { c ->
-                val unparsedMessages = mutableListOf<UnparsedMessageEntity>()
-
-                while (c.moveToNext()) {
-                    val address = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.ADDRESS))
-                    val body = c.getString(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.BODY))
-                    val dateSent = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox.DATE_SENT))
-                    val smsId = c.getLong(c.getColumnIndexOrThrow(Telephony.Sms.Inbox._ID))
-
-                    if (SenderWhitelist.isWhitelisted(address)) {
-                        matchedCount++
-                        Log.i(TAG, "Backfill matched #${smsId} — sender: $address, " +
-                                "date: $dateSent, body: $body")
-
-                        unparsedMessages.add(
-                            UnparsedMessageEntity(
-                                senderAddress = address,
-                                rawBody = body,
-                                receivedAt = dateSent
-                            )
-                        )
-                    }
-                }
-
-                // Batch persist (one-time init call — safe to block IO)
-                if (unparsedMessages.isNotEmpty()) {
-                    val (parsedCount, unparsedCount) = runBlocking(Dispatchers.IO) {
-                        val app = FinanceTrackerApp.getInstance()
-                        val txDao = app.database.transactionDao()
-                        val unparsedDao = app.database.unparsedMessageDao()
-                        val transactions = mutableListOf<TransactionEntity>()
-                        val failures = mutableListOf<UnparsedMessageEntity>()
-
-                        for (msg in unparsedMessages) {
-                            val parsed = SibParser.parse(msg.senderAddress, msg.rawBody)
-                            if (parsed != null) {
-                                transactions.add(
-                                    TransactionEntity(
-                                        transactionId = TransactionIdGenerator.generate(
-                                            msg.senderAddress, msg.receivedAt, msg.rawBody
-                                        ),
-                                        amount = parsed.amount,
-                                        date = parsed.date.toEpochMilli(),
-                                        merchant = parsed.merchant,
-                                        type = parsed.type,
-                                        accountLast4 = parsed.accountLast4,
-                                        rawRef = parsed.rawRef,
-                                        senderAddress = msg.senderAddress,
-                                        rawBody = msg.rawBody
-                                    )
-                                )
-                            } else {
-                                failures.add(msg.copy(
-                                    failureReason = "No parser matched this SMS format"
-                                ))
-                            }
-                        }
-
-                        if (transactions.isNotEmpty()) {
-                            txDao.insertAll(transactions)
-                        }
-                        if (failures.isNotEmpty()) {
-                            unparsedDao.insertAll(failures)
-                        }
-                        Pair(transactions.size, failures.size)
-                    }
-                    Log.i(TAG, "Persisted ${unparsedMessages.size} backfill messages " +
-                            "($parsedCount parsed, $unparsedCount unparsed)")
-                }
-            }
+        val matched = try {
+            queryWhitelistedInbox(context)
         } catch (e: SecurityException) {
             Log.w(TAG, "Backfill blocked by Android 14+ restriction: ${e.message}. " +
                     "Live SMS capture via BroadcastReceiver still works.")
+            emptyList()
+        }
+
+        if (matched.isNotEmpty()) {
+            persist(matched)
         }
 
         // Mark backfill as done (even if 0 messages found)
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putBoolean(PREF_BACKFILL_DONE, true).apply()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(PREF_BACKFILL_DONE, true).apply()
 
-        Log.i(TAG, "Backfill complete — matched $matchedCount whitelisted messages")
-        return matchedCount
+        Log.i(TAG, "Backfill complete — matched ${matched.size} whitelisted messages")
+        matched.size
+    }
+
+    /**
+     * Reads the inbox and keeps only whitelisted senders (rule 2). Sender IDs
+     * vary, so filtering happens in memory rather than in the query.
+     */
+    private fun queryWhitelistedInbox(context: Context): List<UnparsedMessageEntity> {
+        val projection = arrayOf(
+            Telephony.Sms.Inbox.ADDRESS,
+            Telephony.Sms.Inbox.BODY,
+            Telephony.Sms.Inbox.DATE_SENT
+        )
+        val sortOrder = "${Telephony.Sms.Inbox.DATE_SENT} DESC"
+        val matched = mutableListOf<UnparsedMessageEntity>()
+
+        context.contentResolver.query(
+            Telephony.Sms.Inbox.CONTENT_URI, projection, null, null, sortOrder
+        )?.use { c ->
+            val addressCol = c.getColumnIndexOrThrow(Telephony.Sms.Inbox.ADDRESS)
+            val bodyCol = c.getColumnIndexOrThrow(Telephony.Sms.Inbox.BODY)
+            val dateCol = c.getColumnIndexOrThrow(Telephony.Sms.Inbox.DATE_SENT)
+
+            while (c.moveToNext()) {
+                val address = c.getString(addressCol) ?: continue
+                if (!SenderWhitelist.isWhitelisted(address)) continue
+                matched.add(
+                    UnparsedMessageEntity(
+                        senderAddress = address,
+                        rawBody = c.getString(bodyCol) ?: "",
+                        receivedAt = c.getLong(dateCol)
+                    )
+                )
+            }
+        }
+        return matched
+    }
+
+    /**
+     * Parses each message; successes become categorized transactions, failures
+     * go to the unparsed queue (rule 5). Batched to keep first launch cheap.
+     */
+    private suspend fun persist(messages: List<UnparsedMessageEntity>) {
+        val database = FinanceTrackerApp.getInstance().database
+        val transactions = mutableListOf<TransactionEntity>()
+        val failures = mutableListOf<UnparsedMessageEntity>()
+
+        for (msg in messages) {
+            val parsed = SibParser.parse(msg.senderAddress, msg.rawBody)
+            if (parsed == null) {
+                failures.add(msg.copy(failureReason = "No parser matched this SMS format"))
+                continue
+            }
+            transactions.add(
+                TransactionEntity(
+                    transactionId = TransactionIdGenerator.generate(
+                        msg.senderAddress, msg.receivedAt, msg.rawBody
+                    ),
+                    amount = parsed.amount,
+                    date = parsed.date.toEpochMilli(),
+                    merchant = parsed.merchant,
+                    type = parsed.type,
+                    accountLast4 = parsed.accountLast4,
+                    rawRef = parsed.rawRef,
+                    senderAddress = msg.senderAddress,
+                    rawBody = msg.rawBody,
+                    category = CategoryMatcher.getCategory(database, parsed.merchant)
+                )
+            )
+        }
+
+        if (transactions.isNotEmpty()) database.transactionDao().insertAll(transactions)
+        if (failures.isNotEmpty()) database.unparsedMessageDao().insertAll(failures)
+        Log.i(TAG, "Persisted ${messages.size} backfill messages " +
+                "(${transactions.size} parsed, ${failures.size} unparsed)")
     }
 }

@@ -3,6 +3,9 @@ package com.buckey.financetracker.ui.screens.Settings
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -34,11 +37,18 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.buckey.financetracker.BuildConfig
 import com.buckey.financetracker.data.db.AppDatabase
+import com.buckey.financetracker.data.importer.MerchantMapImporter
 import com.buckey.financetracker.data.sheets.GoogleSignInHelper
 import com.buckey.financetracker.data.sms.SmsBackfill
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private val MERCHANT_MAP_MIME_TYPES = arrayOf(
+    "application/json",
+    "text/plain",
+    "application/octet-stream"
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,6 +59,32 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     var showClearDataDialog by remember { mutableStateOf(false) }
     var backfillMessage by remember { mutableStateOf<String?>(null) }
+    var importMessage by remember { mutableStateOf<String?>(null) }
+
+    // Storage Access Framework: the user picks merchant_map.json themselves, so
+    // no storage permission is needed (rule 11 caps what this app may request).
+    val importMerchantMap = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importMessage = "Importing…"
+        scope.launch {
+            importMessage = try {
+                val json = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        stream.bufferedReader().readText()
+                    }
+                } ?: throw IllegalStateException("Could not open the selected file.")
+
+                MerchantMapImporter.import(database, json).summary()
+            } catch (e: MerchantMapImporter.InvalidMapException) {
+                "Import failed: ${e.message}"
+            } catch (e: Exception) {
+                Log.e("SettingsScreen", "Merchant map import failed", e)
+                "Import failed: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
 
     val smsPermissionGranted = ContextCompat.checkSelfPermission(
         context, Manifest.permission.RECEIVE_SMS
@@ -107,15 +143,25 @@ fun SettingsScreen(
                     Button(
                         onClick = {
                             scope.launch {
-                                val count = withContext(Dispatchers.IO) {
-                                    SmsBackfill.runBackfill(context)
-                                }
+                                val count = SmsBackfill.runBackfill(context)
                                 backfillMessage = "Backfill complete: $count messages processed"
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Re-run SMS Backfill")
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Button(
+                        // Some document providers report .json as octet-stream or
+                        // plain text; filtering on application/json alone can make
+                        // the file unselectable.
+                        onClick = { importMerchantMap.launch(MERCHANT_MAP_MIME_TYPES) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Import Merchant Map")
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -141,6 +187,18 @@ fun SettingsScreen(
                 )
             }
 
+            // Merchant map import result
+            importMessage?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (it.startsWith("Import failed"))
+                        MaterialTheme.colorScheme.error
+                    else
+                        MaterialTheme.colorScheme.primary
+                )
+            }
+
             // Version info
             Text(
                 text = "Buckey Finance Tracker\nNo data leaves your device except to Google Sheets.",
@@ -155,9 +213,9 @@ fun SettingsScreen(
                 onDismissRequest = { showClearDataDialog = false },
                 title = { Text("Clear All Data?") },
                 text = {
-                    Text("This will delete all transactions, category rules, " +
-                            "and unparsed messages from the local database. " +
-                            "This cannot be undone.")
+                    Text("This will delete all transactions and unparsed messages " +
+                            "from the local database, and reset category rules to " +
+                            "the defaults. This cannot be undone.")
                 },
                 confirmButton = {
                     TextButton(
@@ -167,6 +225,9 @@ fun SettingsScreen(
                                     database.transactionDao().deleteAll()
                                     database.categoryDao().deleteAll()
                                     database.unparsedMessageDao().deleteAll()
+                                    // Seeding only runs on database creation, so the
+                                    // starter rules have to be restored by hand here.
+                                    AppDatabase.seedDefaultCategories(database)
                                 }
                                 showClearDataDialog = false
                             }

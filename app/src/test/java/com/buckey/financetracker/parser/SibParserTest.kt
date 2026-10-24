@@ -106,6 +106,35 @@ class SibParserTest {
         assertEquals(TransactionType.CREDIT, result.type)
     }
 
+    @Test
+    fun `credit - payer at another bank`() {
+        val sms = "UPI Credit:INR Rs.600.00 in A/c X6825. Info:UPI/HDFC/658298201234/AARON JACOB on 04-08-26 14:02:11.Final balance is Rs.1200.00 -South Indian Bank"
+        val result = SibParser.parse("AX-SIBSMS-S", sms)
+
+        assertNotNull(result)
+        assertEquals(600.00, result!!.amount, 0.001)
+        assertEquals("658298201234", result.rawRef)
+        assertEquals("AARON JACOB", result.merchant)
+        assertEquals(TransactionType.CREDIT, result.type)
+    }
+
+    @Test
+    fun `credit - payer on a wallet with mixed-case name`() {
+        val sms = "UPI Credit:INR Rs.52.00 in A/c X6825. Info:UPI/PPIW/622137251234/Aaron Jacob on 09-08-26 09:15:40.Final balance is Rs.900.00 -South Indian Bank"
+        val result = SibParser.parse("AX-SIBSMS-S", sms)
+
+        assertNotNull(result)
+        assertEquals("622137251234", result!!.rawRef)
+        assertEquals("Aaron Jacob", result.merchant)
+    }
+
+    @Test
+    fun `failure - bank code that is not four letters`() {
+        val sms = "UPI Credit:INR Rs.52.00 in A/c X6825. Info:UPI/HDFC1/622137251234/AARON JACOB on 09-08-26 09:15:40.Final balance is Rs.900.00 -South Indian Bank"
+
+        assertNull(SibParser.parse("AX-SIBSMS-S", sms))
+    }
+
     // ==================== FAILURE CASES ====================
 
     @Test

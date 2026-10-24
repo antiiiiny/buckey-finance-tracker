@@ -33,6 +33,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.buckey.financetracker.data.category.GenericMerchant
 import com.buckey.financetracker.data.category.MerchantMemory
 import com.buckey.financetracker.data.db.AppDatabase
 import com.buckey.financetracker.data.db.entities.TransactionEntity
@@ -42,7 +43,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val PRESET_CATEGORIES = listOf(
+/** Categories offered in every category picker in the app. */
+internal val PRESET_CATEGORIES = listOf(
     "Food", "Transport", "Shopping", "Groceries", "Utilities",
     "Housing", "Income", "Transfer", "Entertainment", "Health",
     "Education", "Travel", "Bills", "Other", "Uncategorized"
@@ -194,7 +196,7 @@ fun CategoryEditorScreen(
                 onClick = {
                     val categoryToSave = if (customCategory.isNotBlank()) customCategory else selectedCategory
                     scope.launch {
-                        if (!isGenericMerchant(tx.merchant)) {
+                        if (!GenericMerchant.isGeneric(tx.merchant)) {
                             MerchantMemory.rememberCategory(database, tx.merchant, categoryToSave)
                         }
                         database.transactionDao().updateCategory(tx.id, categoryToSave)
@@ -212,7 +214,7 @@ fun CategoryEditorScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 val displayCategory = if (customCategory.isNotBlank()) customCategory else selectedCategory
                 val merchant = tx.merchant
-                if (isGenericMerchant(merchant)) {
+                if (GenericMerchant.isGeneric(merchant)) {
                     Text(
                         text = "Category updated to \"$displayCategory\" for this transaction only. " +
                                 "Full categorization will come from bank statement matching.",
@@ -230,16 +232,4 @@ fun CategoryEditorScreen(
             }
         }
     }
-}
-
-/**
- * Returns true if the merchant name is a generic payment method (like "UPI")
- * rather than a specific payee. Generic merchants should not create auto-category
- * rules — real categorization will come from bank statement matching in Stage 7.
- */
-private fun isGenericMerchant(merchant: String): Boolean {
-    return merchant.equals("UPI", ignoreCase = true) ||
-            merchant.equals("NEFT", ignoreCase = true) ||
-            merchant.equals("IMPS", ignoreCase = true) ||
-            merchant.equals("RTGS", ignoreCase = true)
 }

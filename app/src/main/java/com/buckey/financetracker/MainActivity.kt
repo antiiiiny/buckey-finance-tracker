@@ -19,6 +19,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -29,27 +32,34 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.buckey.financetracker.data.category.CategoryRepair
 import com.buckey.financetracker.data.sheets.GoogleSignInHelper
 import com.buckey.financetracker.data.sheets.SheetsSyncWorker
 import com.buckey.financetracker.data.sms.SmsBackfill
 import com.buckey.financetracker.ui.screens.CategoryEditor.CategoryEditorScreen
+import com.buckey.financetracker.ui.screens.ResolveMessage.ResolveMessageScreen
+import com.buckey.financetracker.ui.screens.ReviewQueue.ReviewQueueScreen
 import com.buckey.financetracker.ui.screens.Settings.SettingsScreen
 import com.buckey.financetracker.ui.screens.SyncStatus.SyncStatusScreen
 import com.buckey.financetracker.ui.screens.TransactionList.TransactionListScreen
 import com.buckey.financetracker.ui.theme.FinanceTrackerTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.common.api.ApiException
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -103,6 +113,9 @@ class MainActivity : ComponentActivity() {
 
         val database = (application as FinanceTrackerApp).database
 
+        // Idempotent; undoes category-rule damage left by older builds.
+        lifecycleScope.launch { CategoryRepair.run(this@MainActivity, database) }
+
         setContent {
             FinanceTrackerTheme {
                 Surface(
@@ -122,7 +135,10 @@ class MainActivity : ComponentActivity() {
                         )
                     } else {
                         val navController = rememberNavController()
-                        var selectedTab by mutableStateOf(0)
+                        var selectedTab by remember { mutableStateOf(0) }
+                        val unresolvedMessages by database.unparsedMessageDao()
+                            .getUnresolvedMessages()
+                            .collectAsStateWithLifecycle(initialValue = emptyList())
 
                         Scaffold(
                             bottomBar = {
@@ -138,6 +154,28 @@ class MainActivity : ComponentActivity() {
                                         },
                                         icon = { Icon(Icons.Default.List, contentDescription = "Transactions") },
                                         label = { Text("Transactions") }
+                                    )
+                                    NavigationBarItem(
+                                        selected = selectedTab == 3,
+                                        onClick = {
+                                            selectedTab = 3
+                                            navController.navigate("review_queue") {
+                                                popUpTo("transaction_list") { inclusive = false }
+                                                launchSingleTop = true
+                                            }
+                                        },
+                                        icon = {
+                                            BadgedBox(
+                                                badge = {
+                                                    if (unresolvedMessages.isNotEmpty()) {
+                                                        Badge { Text("${unresolvedMessages.size}") }
+                                                    }
+                                                }
+                                            ) {
+                                                Icon(Icons.Default.Warning, contentDescription = "Review queue")
+                                            }
+                                        },
+                                        label = { Text("Review") }
                                     )
                                     NavigationBarItem(
                                         selected = selectedTab == 1,
@@ -177,6 +215,27 @@ class MainActivity : ComponentActivity() {
                                         onTransactionTap = { txId ->
                                             navController.navigate("category_editor/$txId")
                                         }
+                                    )
+                                }
+                                composable("review_queue") {
+                                    ReviewQueueScreen(
+                                        database = database,
+                                        onMessageTap = { messageId ->
+                                            navController.navigate("resolve_message/$messageId")
+                                        }
+                                    )
+                                }
+                                composable(
+                                    route = "resolve_message/{messageId}",
+                                    arguments = listOf(
+                                        navArgument("messageId") { type = NavType.LongType }
+                                    )
+                                ) { backStackEntry ->
+                                    val messageId = backStackEntry.arguments?.getLong("messageId") ?: return@composable
+                                    ResolveMessageScreen(
+                                        database = database,
+                                        messageId = messageId,
+                                        onDone = { navController.popBackStack() }
                                     )
                                 }
                                 composable("sync_status") {
@@ -242,8 +301,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun runBackfill() {
-        val count = SmsBackfill.runBackfill(this)
-        backfillCount = count
+        lifecycleScope.launch {
+            backfillCount = SmsBackfill.runBackfill(this@MainActivity)
+        }
     }
 }
 

@@ -31,6 +31,16 @@ interface UnparsedMessageDao {
     @Query("SELECT * FROM unparsed_messages WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): UnparsedMessageEntity?
 
+    /**
+     * Resolves queued messages whose body mentions [ref]. Used when a statement
+     * import has already recorded that transaction; the rows are kept (rule 5).
+     */
+    @Query(
+        "UPDATE unparsed_messages SET manually_resolved = 1 " +
+            "WHERE manually_resolved = 0 AND raw_body LIKE '%' || :ref || '%'"
+    )
+    suspend fun resolveByReference(ref: String): Int
+
     @Query("DELETE FROM unparsed_messages")
     suspend fun deleteAll()
 }

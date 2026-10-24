@@ -60,6 +60,15 @@ android {
         compose = true
     }
 
+    testOptions {
+        unitTests {
+            // android.jar's stubs throw "not mocked" by default, so any code path
+            // touching android.util.Log is untestable on the JVM. Returning
+            // defaults instead lets logging stay in the code under test.
+            isReturnDefaultValues = true
+        }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -114,6 +123,10 @@ dependencies {
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    // android.jar stubs org.json and throws "not mocked" on the JVM. The real
+    // implementation on the test classpath lets MerchantMapImporter.parse() be
+    // unit tested without a device.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation(composeBom)

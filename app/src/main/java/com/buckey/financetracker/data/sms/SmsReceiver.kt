@@ -46,7 +46,8 @@ class SmsReceiver : BroadcastReceiver() {
             return
         }
 
-        Log.i(TAG, "Whitelisted SMS captured — sender: $senderAddress, body: $fullBody")
+        // Rule 12: never log the body — it carries amounts, balances and account digits.
+        Log.i(TAG, "Whitelisted SMS captured — sender: $senderAddress, length: ${fullBody.length}")
 
         // Run parser pipeline
         scope.launch {

@@ -55,13 +55,44 @@ abstract class AppDatabase : RoomDatabase() {
                 super.onCreate(db)
                 CoroutineScope(Dispatchers.IO).launch {
                     // Wait for database to be ready, then seed
-                    val db = getDatabase(FinanceTrackerApp.getInstance())
-                    db.categoryDao().insertAll(SEED_CATEGORIES)
+                    seedDefaultCategories(getDatabase(FinanceTrackerApp.getInstance()))
                 }
             }
         }
 
-        /** Starter category rules — merchant keyword → category */
+        /**
+         * Inserts the starter rules into `category_rules`.
+         *
+         * Seeding otherwise happens exactly once, in [SEED_CALLBACK] on database
+         * creation. Anything that empties the table — notably "Clear All Data" in
+         * Settings — must call this afterwards, or auto-categorization stays dead
+         * until the app is reinstalled.
+         */
+        suspend fun seedDefaultCategories(database: AppDatabase) {
+            database.categoryDao().insertAll(SEED_CATEGORIES)
+        }
+
+        /**
+         * Adds any starter rule whose pattern is missing, without touching the
+         * ones present. Returns how many were added.
+         *
+         * Unlike [seedDefaultCategories] this is safe to call on every launch: it
+         * repairs a table emptied by an older "Clear All Data" (which did not
+         * reseed) without overwriting a rule the user re-pointed.
+         */
+        suspend fun restoreMissingSeedRules(database: AppDatabase): Int =
+            database.categoryDao().insertAllIfAbsent(SEED_CATEGORIES).count { it != -1L }
+
+        /**
+         * Starter category rules — merchant keyword → category.
+         *
+         * Deliberately contains no "upi"/"neft"/"imps" → Transfer rules. SIB's debit
+         * SMS carries no payee, so SibParser sets merchant = "UPI" on every debit;
+         * a rule on that string would label every debit "Transfer", which looks
+         * categorized but actually means unknown. Without it debits fall to
+         * "Uncategorized" and stay visibly pending until a real payee arrives from
+         * statement matching (Stage 7). Do not add them back.
+         */
         private val SEED_CATEGORIES = listOf(
             CategoryRuleEntity(merchantPattern = "swiggy", category = "Food"),
             CategoryRuleEntity(merchantPattern = "zomato", category = "Food"),
@@ -81,9 +112,6 @@ abstract class AppDatabase : RoomDatabase() {
             CategoryRuleEntity(merchantPattern = "rent", category = "Housing"),
             CategoryRuleEntity(merchantPattern = "salary", category = "Income"),
             CategoryRuleEntity(merchantPattern = "refund", category = "Income"),
-            CategoryRuleEntity(merchantPattern = "upi", category = "Transfer"),
-            CategoryRuleEntity(merchantPattern = "neft", category = "Transfer"),
-            CategoryRuleEntity(merchantPattern = "imps", category = "Transfer"),
             CategoryRuleEntity(merchantPattern = "netflix", category = "Entertainment"),
             CategoryRuleEntity(merchantPattern = "spotify", category = "Entertainment"),
             CategoryRuleEntity(merchantPattern = "prime video", category = "Entertainment"),
